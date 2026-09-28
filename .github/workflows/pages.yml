@@ -1,0 +1,41 @@
+# Publishes the demo/ folder to GitHub Pages whenever it changes on main.
+# One-time setup: repo Settings -> Pages -> Build and deployment -> Source: GitHub Actions.
+# Based on GitHub's own static-site starter workflow.
+
+name: Deploy demo to Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "demo/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:   # also runnable by hand from the Actions tab
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload the demo folder only
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "demo"
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

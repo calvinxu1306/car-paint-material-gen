@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Car Paint from One Photo</title>
+  <meta name="description" content="A neural network reads a single flash photo of car paint and recovers its base coat, metallic flakes and clear coat. Validation samples rendered live in three.js.">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <main class="layout">
+    <section class="stage" aria-label="3D preview">
+      <canvas id="view"></canvas>
+      <div class="stage-bar">
+        <div class="seg" role="group" aria-label="Object">
+          <button type="button" data-object="sphere" class="on">Sphere</button>
+          <button type="button" data-object="car" id="car-btn" disabled title="Set car_model in demo/assets/config.json to enable">Car</button>
+        </div>
+        <label class="check"><input type="checkbox" id="spin" checked> Rotate</label>
+      </div>
+      <p class="status" id="status" role="status"></p>
+    </section>
+
+    <aside class="panel">
+      <header>
+        <h1>Car paint from one photo</h1>
+        <p class="lede">A network looks at a single flash photo of paint and recovers its three layers: base coat, metallic flakes and clear coat. These samples were held out from training.</p>
+      </header>
+
+      <div class="block">
+        <div class="input-row">
+          <figure class="input">
+            <img id="input-photo" alt="Flash photo given to the network">
+            <figcaption>Input: one flash photo</figcaption>
+          </figure>
+          <div class="maps" id="maps" aria-label="Texture maps in use">
+            <figure><img id="map-basecolor" alt="Base colour map"><figcaption>Base colour</figcaption></figure>
+            <figure><img id="map-rough" alt="Roughness map"><figcaption>Roughness</figcaption></figure>
+            <figure><img id="map-normal" alt="Flake normal map"><figcaption>Flake normals</figcaption></figure>
+          </div>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-head">
+          <h2>Material shown</h2>
+          <div class="seg" role="group" aria-label="Material source">
+            <button type="button" data-mode="pred" class="on">Predicted</button>
+            <button type="button" data-mode="gt">Ground truth</button>
+          </div>
+        </div>
+        <table class="params" aria-label="Layer parameters">
+          <thead><tr><th>Layer parameter</th><th>Predicted</th><th>True</th></tr></thead>
+          <tbody id="param-rows"></tbody>
+        </table>
+        <p class="note">Greyed rows are not recoverable from a flash photo taken in a dark room: the clear coat reflects only the flash, so its strength and ripple leave almost no trace. Flakes come through the normal map, not the numbers.</p>
+      </div>
+
+      <div class="block">
+        <h2>Samples</h2>
+        <div class="grid" id="samples" role="listbox" aria-label="Validation samples"></div>
+      </div>
+
+      <div class="block">
+        <label class="slider">
+          <span>Flake size on object</span>
+          <input type="range" id="repeat" min="1" max="16" step="1" value="6">
+        </label>
+        <label class="slider" id="paint-pick" hidden>
+          <span>Paint material on car</span>
+          <select id="paint-select"></select>
+        </label>
+      </div>
+
+      <footer id="footer"></footer>
+    </aside>
+  </main>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

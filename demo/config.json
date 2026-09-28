@@ -1,0 +1,5 @@
+{
+  "car_model": null,
+  "car_credit": null,
+  "_help": "To show a car: put a .glb in demo/assets/, set car_model to its file name (e.g. \"car.glb\"), and set car_credit to its title, author, licence and link, e.g. \"Car model: <title> by <author> (CC0), <url>\"."
+}
