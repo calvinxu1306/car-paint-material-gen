@@ -64,3 +64,28 @@ No public car-paint SVBRDF dataset exists, so follow the synthetic-procedural co
 1. **The differentiable multilayer renderer (W4)** — without it the rendering loss can't supervise the new channels. Highest technical risk.
 2. **Blender synthetic pipeline (W2)** — bottleneck for everything downstream.
 3. **Synthetic-to-real gap** — the real failure mode of this whole family of methods; plan to measure it, not be surprised by it.
+
+---
+
+## 9. As built (updated 2026-09-27)
+
+The header above says not to let the code drift from this document silently.
+It drifted; this section records where, so the report describes what was
+actually built rather than what was planned.
+
+| Plan (§2–§6) | As built | Why / status |
+|---|---|---|
+| Normal as 2 channels (x, y) | 3 channels (x, y, z) | z is redundant for a unit normal and near-constant; read results from x and y. Candidate to drop. |
+| Flake layer: density, size, orientation spread, colour/variance | `flake_scale` (cell size ↔ density), `flake_strength` (orientation spread); no flake colour | Scale and strength cover size/density/spread; flake tint not modelled. |
+| Clear coat: intensity, roughness | `coat_weight`, `coat_roughness`, plus `peel_strength` (orange peel) | Peel added in v2. `coat_weight` over 0.8–1.0 proved unobservable (clipped highlight). |
+| Staged decomposition (base coat first), ablated vs joint | Single shared encoder, two parallel heads: per-pixel maps + per-sample layer scalars read off the global vector | Staged decomposition not built. The scalar head is the layer-separation mechanism. |
+| Rendering-aware loss as the backbone | Implemented (`src/models/render.py`) but **off by default**; all reported runs use map L1 (+ scalar L1) | Its renderer is single-layer Cook-Torrance with no coat or flakes — the §4 open question and risk #1 are still open. |
+| Ranges seeded from Günther Table 1 | Qualitatively only in v1–v2; the coat roughness range was far sharper than any measured paint | Corrected in v3 (coat roughness 0.08–0.22 brackets Günther's m₃). |
+| Real paint-chip validation set | Not captured | Synthetic-to-real gap unmeasured. |
+| PSNR/SSIM, re-rendered LPIPS | Not computed; development metric is skill vs a mean predictor | Needed for the report. |
+| — | v2 applied flake normals to the clear coat too (Cycles default) | Found in the audit; fixed in v3. See `docs/ablations.md`. |
+
+The per-sample layer head is, in the literature's terms, **inverse procedural
+material modelling** for a car-paint-specific generator (compare Hu et al.
+2019/2022, MATch 2020, Li et al. 2023). Position the contribution that way in
+the report.
