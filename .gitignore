@@ -220,5 +220,6 @@ __marimo__/
 # generated training data
 data/blender_gen/dataset_output/
 data/blender_gen/dataset_v2/
-
+data/blender_gen/dataset_v3/
 runs/
+*.pt

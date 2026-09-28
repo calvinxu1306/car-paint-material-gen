@@ -1,7 +1,7 @@
 """
 dataset.py — PyTorch Dataset for the rendered car-paint samples.
 
-Reads the folder produced by generate_dataset_v2.py and hands the network
+Reads a folder produced by generate_dataset_v2.py or _v3.py and hands the network
 (photo -> ground-truth) pairs as tensors.
 
 WHAT EACH SAMPLE LOOKS LIKE
@@ -24,8 +24,9 @@ Predicting them as maps would waste capacity learning to output a constant.
 They are the quantities no learning-based SVBRDF paper in the reading list
 predicts at all, so they are the point of the project - hence their own head.
 
-Scalars are normalised to 0..1 using SCALAR_RANGES, which MUST match the
-sampling ranges in generate_dataset_v2.py. A mismatch is checked for at load
+Scalars are normalised to 0..1 using the ranges in the dataset's meta.json
+(v3 onwards), falling back to SCALAR_RANGES below for v2 folders, which have
+no meta.json. The data is also checked against those ranges at load
 time and warned about rather than silently corrupting the targets.
 
 ONE SUBTLETY WORTH KNOWING
@@ -53,7 +54,9 @@ MAP_CHANNELS = ["basecolor_r", "basecolor_g", "basecolor_b",
                 "roughness", "metallic", "normal_x", "normal_y", "normal_z"]
 
 # Per-sample layer properties: the clear coat and the flakes.
-# KEEP IN SYNC with sample_paint_params() in generate_dataset_v2.py.
+# These are the v2 DEFAULTS. A dataset folder containing meta.json (written by
+# generate_dataset_v3.py onwards) overrides them with the ranges it was actually
+# generated with, so the loader cannot silently disagree with the generator.
 SCALAR_RANGES = {
     "coat_weight": (0.8, 1.0),
     "coat_roughness": (0.01, 0.1),
@@ -80,24 +83,37 @@ def load_png(path: str) -> np.ndarray:
     return arr
 
 
-def normalise_scalars(p: dict) -> np.ndarray:
+def load_scalar_ranges(root: str) -> dict:
+    """Ranges from the dataset's meta.json if it has one, else the v2 defaults."""
+    path = os.path.join(root, "meta.json")
+    if not os.path.exists(path):
+        return dict(SCALAR_RANGES)
+    with open(path) as f:
+        meta = json.load(f)
+    ranges = meta.get("ranges", {})
+    missing = [k for k in SCALAR_KEYS if k not in ranges]
+    if missing:
+        raise RuntimeError(f"{path} has no range for {missing}")
+    return {k: tuple(ranges[k]) for k in SCALAR_KEYS}
+
+
+def normalise_scalars(p: dict, ranges: dict = SCALAR_RANGES) -> np.ndarray:
     """Map the raw layer parameters into 0..1 so one loss weight suits them all.
 
-    Without this, flake_scale (~100) would dominate coat_roughness (~0.05) by
+    Without this, flake_scale (~100) would dominate coat_roughness (~0.1) by
     three orders of magnitude and the network would ignore the coat entirely.
     """
     out = np.empty(len(SCALAR_KEYS), dtype=np.float32)
     for i, k in enumerate(SCALAR_KEYS):
-        lo, hi = SCALAR_RANGES[k]
+        lo, hi = ranges[k]
         out[i] = (float(p[k]) - lo) / (hi - lo)
     return out
 
 
-def denormalise_scalars(v) -> dict:
+def denormalise_scalars(v, ranges: dict = SCALAR_RANGES) -> dict:
     """Back to real units, for reporting errors people can interpret."""
     arr = v.detach().cpu().numpy() if torch.is_tensor(v) else np.asarray(v)
-    return {k: float(arr[i] * (SCALAR_RANGES[k][1] - SCALAR_RANGES[k][0])
-                     + SCALAR_RANGES[k][0])
+    return {k: float(arr[i] * (ranges[k][1] - ranges[k][0]) + ranges[k][0])
             for i, k in enumerate(SCALAR_KEYS)}
 
 
@@ -117,6 +133,7 @@ class CarPaintDataset(Dataset):
                  require_scalars: bool = True):
         self.root = root
         self.require_scalars = require_scalars
+        self.scalar_ranges = load_scalar_ranges(root)
         self.indices = self._discover(root)
         if limit is not None:
             self.indices = self.indices[:limit]
@@ -154,7 +171,7 @@ class CarPaintDataset(Dataset):
 
     def _check_scalar_ranges(self) -> None:
         """Warn if the data was generated with different ranges than
-        SCALAR_RANGES says. Silent mismatch here would corrupt every target."""
+        the ranges in use say. Silent mismatch here would corrupt every target."""
         if not self.require_scalars:
             return
         sample = self._params(self.indices[0])
@@ -162,7 +179,7 @@ class CarPaintDataset(Dataset):
         if missing:
             raise RuntimeError(
                 f"{self.root} has no {missing} in its params - that's a v1 "
-                f"dataset. Regenerate with generate_dataset_v2.py, or pass "
+                f"dataset. Regenerate with generate_dataset_v3.py, or pass "
                 f"require_scalars=False to train on maps only.")
 
         probe = self.indices[::max(1, len(self.indices) // 50)]
@@ -173,12 +190,13 @@ class CarPaintDataset(Dataset):
                 lo_hi[k][0] = min(lo_hi[k][0], float(p[k]))
                 lo_hi[k][1] = max(lo_hi[k][1], float(p[k]))
         for k, (lo, hi) in lo_hi.items():
-            exp_lo, exp_hi = SCALAR_RANGES[k]
+            exp_lo, exp_hi = self.scalar_ranges[k]
             slack = 0.05 * (exp_hi - exp_lo)
             if lo < exp_lo - slack or hi > exp_hi + slack:
                 print(f"WARNING: {k} in the data spans [{lo:.3g}, {hi:.3g}] but "
-                      f"SCALAR_RANGES says [{exp_lo:.3g}, {exp_hi:.3g}]. "
-                      f"Update SCALAR_RANGES in dataset.py to match the generator.")
+                      f"the ranges in use say [{exp_lo:.3g}, {exp_hi:.3g}]. "
+                      f"Without a meta.json these come from SCALAR_RANGES in "
+                      f"dataset.py - fix them to match the generator.")
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -198,7 +216,7 @@ class CarPaintDataset(Dataset):
 
         p = self._params(index)
         params = np.array([p[k] for k in PARAM_KEYS], dtype=np.float32)
-        scalars = (normalise_scalars(p) if self.require_scalars
+        scalars = (normalise_scalars(p, self.scalar_ranges) if self.require_scalars
                    else np.zeros(len(SCALAR_KEYS), dtype=np.float32))
 
         to_chw = lambda a: torch.from_numpy(np.ascontiguousarray(
@@ -232,7 +250,11 @@ def make_loaders(root: str, batch_size: int = 8, val_fraction: float = 0.1,
 def self_test(root: str) -> bool:
     """Load a few samples and check the decoded data matches the params JSON."""
     ds = CarPaintDataset(root, split="all")
+    src = "meta.json" if os.path.exists(os.path.join(root, "meta.json")) \
+        else "v2 defaults in dataset.py"
     print(f"found {len(ds)} complete samples in {root}")
+    print(f"scalar ranges from {src}: "
+          + ", ".join(f"{k} {lo:g}-{hi:g}" for k, (lo, hi) in ds.scalar_ranges.items()))
 
     s = ds[0]
     print(f"photo   {tuple(s['photo'].shape)}  "
@@ -262,7 +284,7 @@ def self_test(root: str) -> bool:
                 print(f"  sample {s['index']:06d}  {label:<14} "
                       f"expected {expected:.3f}  got {actual:.3f}  MISMATCH")
         # Scalars should round-trip exactly.
-        back = denormalise_scalars(s["scalars"])
+        back = denormalise_scalars(s["scalars"], ds.scalar_ranges)
         for k in SCALAR_KEYS:
             if abs(back[k] - float(p[k])) > 1e-3 * max(1.0, abs(float(p[k]))):
                 ok = False

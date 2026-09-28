@@ -11,19 +11,24 @@ it on with --render-weight 1 once you want to compare with and without it; that
 comparison is an ablation worth having in the write-up.
 
 FIRST THING TO RUN — the overfit test:
-    python src/train.py --root data/blender_gen/dataset_v2 --out runs/overfit \
+    python src/train.py --root data/blender_gen/dataset_v3 --out runs/v3_overfit \
         --overfit 4 --epochs 200
 The loss should collapse towards ~0. If it can't overfit 4 samples, something
 is broken and training on 2000 would hide it behind noise.
 
-THEN the real run:
-    python src/train.py --root data/blender_gen/dataset_v2 --out runs/v3 \
+THEN the controlled pair (identical except for the scalar loss):
+    python src/train.py --root data/blender_gen/dataset_v3 --out runs/v3_maps \
+        --epochs 50 --batch-size 8 --scalar-weight 0
+    python src/train.py --root data/blender_gen/dataset_v3 --out runs/v3_joint \
         --epochs 50 --batch-size 8
 
-Give every run its OWN --out directory. Mixing runs in one folder is how
-previews and logs get misattributed to the wrong model.
+Every run gets its OWN folder, and train.py refuses to write into one that
+already holds a run (pass --overwrite to force it). Without --out it makes a
+new timestamped runs/run_* folder. Mixing runs in one folder is how previews
+and checkpoints get misattributed to the wrong model - it happened once.
 
 Outputs, under --out:
+    config.json      the arguments and dataset meta that produced this run
     best.pt          weights with the lowest validation loss
     last.pt          weights from the final epoch
     log.csv          per-epoch losses, for plotting later
@@ -38,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import sys
 import time
@@ -54,8 +60,7 @@ for sub in ("data", "models"):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from dataset import (CarPaintDataset, MAP_CHANNELS, SCALAR_KEYS,  # noqa: E402
-                     SCALAR_RANGES)
+from dataset import CarPaintDataset, MAP_CHANNELS, SCALAR_KEYS  # noqa: E402
 from model import CarPaintNet, count_params        # noqa: E402
 from render import RenderLoss                      # noqa: E402
 
@@ -160,7 +165,10 @@ def run_epoch(model, loader, device, criterion, optimizer=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="data/blender_gen/dataset_v2")
-    ap.add_argument("--out", default="runs/v3")
+    ap.add_argument("--out", default=None,
+                    help="run folder; default is a new timestamped runs/run_* folder")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="allow writing into a folder that already holds a run")
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=2e-4)
@@ -177,9 +185,16 @@ def main():
                     help="rendering-aware loss; 0 = off (default)")
     args = ap.parse_args()
 
+    if args.out is None:
+        args.out = os.path.join("runs", time.strftime("run_%Y%m%d_%H%M%S"))
+    if os.path.exists(os.path.join(args.out, "log.csv")) and not args.overwrite:
+        sys.exit(f"{args.out} already holds a run (log.csv exists). Pick a new "
+                 f"--out, or pass --overwrite if you really mean to replace it.")
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     os.makedirs(args.out, exist_ok=True)
+    print(f"run folder: {args.out}")
     device = pick_device(args.device)
 
     from torch.utils.data import DataLoader
@@ -191,6 +206,7 @@ def main():
                                   num_workers=args.workers)
         val_loader = DataLoader(ds, batch_size=bs, num_workers=args.workers)
         print(f"OVERFIT MODE: {len(ds)} samples, expecting the loss to approach 0")
+        ranges = ds.scalar_ranges
     else:
         common = dict(root=args.root, val_fraction=0.1, limit=args.limit)
         train_ds = CarPaintDataset(split="train", **common)
@@ -200,6 +216,16 @@ def main():
         val_loader = DataLoader(val_ds, batch_size=args.batch_size,
                                 num_workers=args.workers)
         print(f"train {len(train_ds)} / val {len(val_ds)} samples")
+        ranges = train_ds.scalar_ranges
+
+    # Record exactly what produced this run, so a results folder can always be
+    # traced back to its data and settings.
+    meta_path = os.path.join(args.root, "meta.json")
+    with open(os.path.join(args.out, "config.json"), "w") as f:
+        json.dump({"args": vars(args),
+                   "dataset_meta": (json.load(open(meta_path))
+                                    if os.path.exists(meta_path) else None),
+                   "scalar_ranges": ranges}, f, indent=2)
 
     model = CarPaintNet().to(device)
     criterion = Criterion(args.map_weight, args.scalar_weight,
@@ -251,9 +277,10 @@ def main():
             save_preview(*last, os.path.join(args.out, f"preview_{epoch:03d}.png"))
 
     print(f"\nbest validation loss: {best:.4f}")
-    print("\nlayer parameters, mean error in REAL units:")
+    print("\nlayer parameters, mean error in REAL units (FINAL epoch - run "
+          "eval_baseline.py on best.pt for the checkpoint's own numbers):")
     for i, k in enumerate(SCALAR_KEYS):
-        lo, hi = SCALAR_RANGES[k]
+        lo, hi = ranges[k]
         print(f"  {k:<16} {vscal[i] * (hi - lo):.4f}   (range {lo} to {hi})")
     worst = np.argsort(vchan)[::-1][:3]
     print("\nworst map channels: " + ", ".join(

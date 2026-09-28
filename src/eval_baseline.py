@@ -19,9 +19,9 @@ Layer parameters are also reported in REAL units, which is what's actually
 interpretable: "coat_roughness is off by 0.012 on a 0.01-0.1 range" says
 something; a normalised number doesn't.
 
-RUN:
-    python src/eval_baseline.py --root data/blender_gen/dataset_v2 \
-        --ckpt runs/v3/best.pt
+RUN (point --root at the dataset the checkpoint was trained on):
+    python src/eval_baseline.py --root data/blender_gen/dataset_v3 \
+        --ckpt runs/v3_joint/best.pt
 """
 
 from __future__ import annotations
@@ -39,8 +39,7 @@ for sub in ("data", "models"):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from dataset import (CarPaintDataset, MAP_CHANNELS, SCALAR_KEYS,  # noqa: E402
-                     SCALAR_RANGES)
+from dataset import CarPaintDataset, MAP_CHANNELS, SCALAR_KEYS  # noqa: E402
 from model import CarPaintNet                      # noqa: E402
 
 
@@ -145,7 +144,8 @@ def main():
     table(MAP_CHANNELS, mean_m, model_m)
 
     print("\nLAYER PARAMETERS (clear coat + flakes)")
-    spans = [SCALAR_RANGES[k][1] - SCALAR_RANGES[k][0] for k in SCALAR_KEYS]
+    r = train_ds.scalar_ranges  # from the dataset's meta.json when it has one
+    spans = [r[k][1] - r[k][0] for k in SCALAR_KEYS]
     table(SCALAR_KEYS, mean_s, model_s, unit_scale=spans,
           unit_note="err (real units)")
 
