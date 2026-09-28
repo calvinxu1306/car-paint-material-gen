@@ -11,7 +11,8 @@ metric — the report should also carry PSNR/SSIM and a re-rendered comparison.
 > **Read the audit section at the bottom first.** A 2026-09-27 audit found that
 > the v2 dataset put the flake normals on the clear coat as well as the base
 > layer, which is not physically how paint works. Runs 2 and 3 are kept as
-> recorded, but their findings are annotated and must be re-measured on v3.
+> recorded, but their findings are annotated. **Runs 4–5, on the corrected v3
+> data, are the results to report.**
 
 ---
 
@@ -139,7 +140,8 @@ modelling**, an established line (Hu et al. 2019, 2022; MATch, Shi et al.
 that, not a new problem.
 
 **Finding 2 — the two failures: one explanation supported, one revised.**
-- `coat_weight` (sampled 0.8–1.0): **supported.** The coat's highlight is a
+- `coat_weight` (sampled 0.8–1.0): **supported at the time, but not
+  sufficient — see Finding 5.** The coat's highlight is a
   small blob that clips — 32–68 pixels at 255 in measured photos. A 0.8 vs 1.0
   coat changes that peak's intensity, which is exactly what clipping erases.
   Coat *roughness* changes the blob's size and falloff, which survive outside
@@ -157,25 +159,99 @@ in Run 2 and ~55% here, but the two runs also differ in code path, data-shuffle
 order (the extra head consumes RNG before the loader shuffles), and are one
 seed each — while Run 2 alone showed a 40-point spread across colour channels.
 The controlled comparison is the same code with `--scalar-weight 0` vs `1`,
-ideally over 2–3 seeds.
+ideally over 2–3 seeds. (Done as Runs 4–5 below.)
+
+---
+
+## Runs 4 and 5 — v3 data, controlled pair (the reportable result)
+
+Dataset `dataset_v3` (2000 samples): flakes on the base layer, orange peel on
+the clear coat, coat roughness 0.08–0.22. Same code, same seed (0), 50 epochs.
+The only difference between the two runs is the scalar loss weight.
+Both best checkpoints came from late epochs (48 and 47 of 50), so both were
+probably still improving slightly.
+
+### Per-pixel maps
+
+| channel | mean pred | Run 4: maps only | Run 5: maps + layer head | change |
+|---|---|---|---|---|
+| basecolor_r | 0.2000 | 81.6% | 77.7% | −3.9 |
+| basecolor_g | 0.1925 | 79.0% | **50.4%** | **−28.6** |
+| basecolor_b | 0.1869 | 77.4% | 79.2% | +1.8 |
+| roughness | 0.0732 | 80.3% | 79.0% | −1.3 |
+| metallic | 0.0724 | 73.6% | 58.8% | −14.8 |
+| normal_x | 0.0467 | 12.3% | 12.2% | −0.1 |
+| normal_y | 0.0467 | 10.5% | 7.6% | −2.9 |
+| normal_z | 0.0075 | 28.0% | 34.8% | (unreliable) |
+| **overall** | **0.1032** | **70.8%** | **62.1%** | **−8.7** |
+
+### Layer parameters
+
+| parameter | Run 4 skill | Run 5 skill | Run 5 error (real units) | v2 skill (Run 3) |
+|---|---|---|---|---|
+| coat_weight | 0.0% | 0.4% | 0.051 (range 0.8–1.0) | −0.5% |
+| coat_roughness | −2.0% | **71.0%** | 0.010 (range 0.08–0.22) | 84.6% |
+| flake_scale | −1.2% | **81.7%** | 3.3 (range 75–150) | 85.5% |
+| flake_strength | 0.4% | **88.8%** | 0.0086 (range 0.12–0.40) | 90.9% |
+| peel_strength | −1.1% | 1.2% | 0.019 (range 0.02–0.09) | 0.7% |
+
+Run 4's layer scores near 0% are the control working as designed: with the
+scalar loss off, the head never trains, so it does no better than the mean.
+
+**Finding 4 — the layer parameters survive physically correct paint.** With
+flakes under a smooth coat, flake strength (88.8%), flake scale (81.7%) and
+clear-coat roughness (71.0%) are still recovered from a single flash photo.
+This is the result to report. The drops from v2 match the audit's prediction
+that v2 was inflated by coat glints: flakes barely moved (−2 to −4 points),
+while coat roughness, whose signal in v2 was smeared across every flake glint,
+fell 14 points. (Coat roughness's range also changed, so the comparison is
+indicative, not exact.)
+
+**Finding 5 — `coat_weight` and `peel_strength` are unobservable in this
+capture setup, and the clipping explanation was not sufficient.** v3's
+highlight no longer clips (0–7 pixels at 255, versus 32–68 in v1/v2), yet
+`coat_weight` is still at 0%. So clipping was not the whole story. Revised
+explanation, for both parameters: the scene is a black room lit by one flash
+at the camera, so the clear coat reflects *only* the flash. Everything the coat
+does is confined to the central highlight — a few hundred pixels whose
+brightness the AgX tone curve also compresses. Orange peel is normally seen as
+a wobble in reflected surroundings, and this scene has no surroundings to
+reflect. Prediction: an environment map, or several lights, would make both
+learnable. Untested.
+
+**Finding 6 — the layer head's cost to the maps is modest, apart from one
+unstable channel.** Under a controlled comparison the overall cost is −8.7
+points, but most of it is `basecolor_g` (−28.6), and green has now collapsed in
+**two of five runs**: Run 2 (maps only, v2) and Run 5 (joint, v3), but not
+Run 3 (joint, v2) or Run 4 (maps only, v3). So the green collapse happens with
+and without the layer head and cannot be pinned on it from one seed. Metallic
+(−14.8) is the cleaner candidate for a real cost; the other channels move by
+≤ 4 points. Settling it needs 2–3 seeds per configuration.
+
+**Open problem — green channel instability.** Green carries most of an image's
+luminance (≈ 72% under Rec. 709 weights), so one hypothesis is that the network
+sometimes falls into predicting green from brightness rather than colour. Cheap
+check: on the validation set, correlate predicted green with true green and
+with photo luminance, for a collapsed run (5) against a healthy one (4).
 
 ---
 
 ## Not yet run
 
-- **v3 controlled pair** (highest priority): `--scalar-weight 0` vs default on
-  `dataset_v3`, same code, same seed. Replaces Runs 2–3 as the reportable
-  result. v3 sample *i* is the same paint as v2 sample *i* except coat roughness
-  and the layer routing, so v2 → v3 is also a paired comparison.
-- extra seeds for that pair (`--seed 1`, `--seed 2`), to size run-to-run noise
+- extra seeds for the Run 4 / Run 5 pair (`--seed 1`, `--seed 2`), to size
+  run-to-run noise and settle Finding 6 and the green instability
+- green-channel diagnostic (see open problem above)
+- environment-lit capture (HDRI or multiple lights), to test Finding 5's
+  explanation for `coat_weight` and `peel_strength`
+- longer training (best checkpoints landed at epochs 45–48 of 50)
 - `--scalar-weight 0.5` — recover map accuracy while keeping layer parameters
 - `--render-weight 1` — with/without the Deschaintre rendering-aware loss
   (implemented in `src/models/render.py`, off by default). Note its renderer is
   plain Cook-Torrance with no clearcoat or flake layer, so it approximates the
   appearance of the three-layer material it is supervising.
-- widened `coat_weight` range, to test the appearance-invariance explanation
+- widened `coat_weight` range (0–1), a cheaper partial test of Finding 5
 - photo pass rendered with `Standard` instead of `AgX`, to test whether the tone
-  curve costs base-colour accuracy
+  curve costs base-colour accuracy (and whether it affects the green collapse)
 
 ## Known limitations
 
