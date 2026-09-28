@@ -83,6 +83,15 @@
       <footer id="footer"></footer>
     </aside>
   </main>
+  <script>
+    // Browsers refuse to run module scripts from a double-clicked file, so the
+    // viewer can't report this itself. Say it here, in plain words.
+    if (location.protocol === 'file:') {
+      document.getElementById('status').textContent =
+        'This page needs a web server. In a terminal inside the demo folder run ' +
+        '"python -m http.server 8000", then open http://localhost:8000';
+    }
+  </script>
   <script type="module" src="main.js"></script>
 </body>
 </html>

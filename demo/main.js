@@ -16,11 +16,14 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const SAMPLES = 'assets/samples/';
 const CONFIG_URL = 'assets/config.json';
-const DRACO_PATH = 'https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/draco/gltf/';
+// Decoders for compressed models are fetched from the same three.js release.
+const THREE_CDN = 'https://cdn.jsdelivr.net/npm/three@0.170.0/';
 const PAINT_WORDS = ['carpaint', 'car_paint', 'paint', 'body', 'exterior', 'shell', 'chassis'];
 
 const PARAMS = [
@@ -254,15 +257,28 @@ function assignPaint(name) {
 }
 
 function guessPaint(materials) {
-  const names = [...materials.keys()];
-  const byWord = names.find((n) => PAINT_WORDS.some((w) => n.toLowerCase().includes(w)));
-  if (byWord) return byWord;
+  // Never guess a hidden material, or one used only by flat parts (floors,
+  // backdrops, number plates).
+  const candidates = [...materials].filter(([, info]) => !info.hidden && info.area > 0);
+  if (!candidates.length) return [...materials.keys()][0];
+  const byWord = candidates.find(([n]) => PAINT_WORDS.some((w) => n.toLowerCase().includes(w)));
+  if (byWord) return byWord[0];
   // Otherwise: the material covering the most surface (bounding-box proxy).
-  let best = names[0], bestArea = -1;
-  for (const [n, info] of materials) {
-    if (info.area > bestArea) { best = n; bestArea = info.area; }
-  }
-  return best;
+  return candidates.reduce((a, b) => (b[1].area > a[1].area ? b : a))[0];
+}
+
+function isFlat(box) {
+  // A mesh whose thinnest side is under 2% of its longest is a sheet: very
+  // likely a floor or backdrop that shipped with the model.
+  const s = box.getSize(new THREE.Vector3());
+  const dims = [s.x, s.y, s.z].sort((a, b) => a - b);
+  return dims[2] > 0 && dims[0] < 0.02 * dims[2];
+}
+
+function boxOf(meshes) {
+  const box = new THREE.Box3();
+  for (const m of meshes) box.expandByObject(m);
+  return box;
 }
 
 async function tryLoadCar() {
@@ -270,21 +286,18 @@ async function tryLoadCar() {
   if (!file) return;   // no car configured: the sphere is the whole demo
 
   setStatus('Loading car model…');
-  const draco = new DRACOLoader().setDecoderPath(DRACO_PATH);
-  const gltf = await new GLTFLoader().setDRACOLoader(draco).loadAsync(`assets/${file}`);
+  // Downloaded models are often compressed in one of three ways; support all.
+  const loader = new GLTFLoader()
+    .setDRACOLoader(new DRACOLoader().setDecoderPath(`${THREE_CDN}examples/jsm/libs/draco/gltf/`))
+    .setKTX2Loader(new KTX2Loader().setTranscoderPath(`${THREE_CDN}examples/jsm/libs/basis/`)
+      .detectSupport(renderer))
+    .setMeshoptDecoder(MeshoptDecoder);
+  const gltf = await loader.loadAsync(`assets/${file}`);
   const group = gltf.scene;
+  group.updateMatrixWorld(true);
 
-  // Normalise: longest side 3.2 units, centred, wheels on the ground.
-  const box = new THREE.Box3().setFromObject(group);
-  const size = box.getSize(new THREE.Vector3());
-  group.scale.setScalar(3.2 / Math.max(size.x, size.y, size.z));
-  box.setFromObject(group);
-  const centre = box.getCenter(new THREE.Vector3());
-  group.position.x -= centre.x;
-  group.position.z -= centre.z;
-  group.position.y -= box.min.y;
-  box.setFromObject(group);
-
+  // ---- collect parts and materials
+  const hide = new Set(state.config.car_hide_materials || []);
   const meshes = [];
   const originals = new Map();
   const materials = new Map();
@@ -294,15 +307,36 @@ async function tryLoadCar() {
     meshes.push(o);
     originals.set(o, o.material);
     const mats = Array.isArray(o.material) ? o.material : [o.material];
-    const b = new THREE.Box3().setFromObject(o).getSize(new THREE.Vector3());
-    const area = 2 * (b.x * b.y + b.y * b.z + b.x * b.z);
+    const box = new THREE.Box3().setFromObject(o);
+    const b = box.getSize(new THREE.Vector3());
+    o.userData.flat = isFlat(box);
+    const area = o.userData.flat ? 0 : 2 * (b.x * b.y + b.y * b.z + b.x * b.z);
     for (const mat of mats) {
       if (!mat.name) mat.name = `material ${++unnamed}`;
-      const info = materials.get(mat.name) || { area: 0 };
+      const info = materials.get(mat.name) || { area: 0, parts: 0, hidden: hide.has(mat.name) };
       info.area += area / mats.length;
+      info.parts += 1;
       materials.set(mat.name, info);
     }
+    // Hide a part only if every material on it is on the hide list.
+    if (mats.every((m) => hide.has(m.name))) o.visible = false;
   });
+  if (!meshes.length) throw new Error('the file contains no meshes');
+
+  // ---- normalise size and position using the car itself, not a floor plane
+  const body = meshes.filter((m) => m.visible && !m.userData.flat);
+  const sizing = body.length ? body : meshes.filter((m) => m.visible);
+  let box = boxOf(sizing);
+  const size = box.getSize(new THREE.Vector3());
+  group.scale.multiplyScalar(3.2 / Math.max(size.x, size.y, size.z));
+  group.updateMatrixWorld(true);
+  box = boxOf(sizing);
+  const centre = box.getCenter(new THREE.Vector3());
+  group.position.x -= centre.x;
+  group.position.z -= centre.z;
+  group.position.y -= box.min.y;
+  group.updateMatrixWorld(true);
+  box = boxOf(sizing);
 
   const footprint = Math.max(box.max.x - box.min.x, box.max.z - box.min.z);
   group.add(shadowDisc(footprint * 0.75, 0.6));
@@ -310,9 +344,16 @@ async function tryLoadCar() {
   scene.add(group);
   state.car = { group, meshes, originals, materials, height: box.max.y };
 
+  // What was found, for anyone debugging a new model (open the console).
+  console.table([...materials].map(([name, i]) => ({
+    material: name, parts: i.parts, hidden: i.hidden, 'flat only': i.area === 0,
+  })));
+
   const select = $('paint-select');
-  select.innerHTML = [...materials.keys()]
-    .map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+  select.innerHTML = [...materials].map(([n, i]) => {
+    const note = i.hidden ? ', hidden' : i.area === 0 ? ', flat' : '';
+    return `<option value="${escapeHtml(n)}">${escapeHtml(n)} (${i.parts} part${i.parts === 1 ? '' : 's'}${note})</option>`;
+  }).join('');
   // A material named in config.json wins over the automatic guess.
   const pinned = state.config.car_paint_material;
   const guess = pinned && materials.has(pinned) ? pinned : guessPaint(materials);
@@ -383,12 +424,17 @@ renderer.setAnimationLoop(() => {
     const res = await fetch(CONFIG_URL);
     if (res.ok) state.config = await res.json();
   } catch { /* config is optional */ }
+  const manifestUrl = new URL(`${SAMPLES}manifest.json`, location.href).href;
   try {
-    const res = await fetch(`${SAMPLES}manifest.json`);
+    const res = await fetch(manifestUrl, { cache: 'no-cache' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.manifest = await res.json();
   } catch (err) {
-    setStatus('No samples found. Run src/export_demo.py to create demo/assets/samples/.');
+    // Say exactly what failed and where: that turns a vague bug into a fix.
+    const local = location.protocol === 'file:'
+      ? ' This page was opened as a file; run "python -m http.server 8000" inside demo/ and open http://localhost:8000 instead.'
+      : ' If you have exported samples, check they were committed and pushed.';
+    setStatus(`Could not load samples: ${err.message} (${manifestUrl}).${local}`);
     console.error(err);
     return;
   }
@@ -400,6 +446,7 @@ renderer.setAnimationLoop(() => {
     await tryLoadCar();
   } catch (err) {
     console.error(err);
-    setStatus('Car model failed to load; showing the sphere.');
+    setStatus(`Car model failed to load (${err.message || err}); showing the sphere.`);
+    setTimeout(() => setStatus(''), 12000);
   }
 })();
