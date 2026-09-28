@@ -313,7 +313,12 @@ async function tryLoadCar() {
   const select = $('paint-select');
   select.innerHTML = [...materials.keys()]
     .map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
-  const guess = guessPaint(materials);
+  // A material named in config.json wins over the automatic guess.
+  const pinned = state.config.car_paint_material;
+  const guess = pinned && materials.has(pinned) ? pinned : guessPaint(materials);
+  if (pinned && !materials.has(pinned)) {
+    console.warn(`car_paint_material "${pinned}" not found; available: ${[...materials.keys()].join(', ')}`);
+  }
   select.value = guess;
   assignPaint(guess);
   select.addEventListener('change', () => assignPaint(select.value));

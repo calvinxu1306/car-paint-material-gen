@@ -1,0 +1,6 @@
+{
+  "car_model": "car.glb",
+  "car_paint_material": null,
+  "car_credit": "Free Concept Car 004 (Public Domain - CC0) by Sketchfab User",
+  "_help": "car_model: file name of a .glb in this folder, e.g. \"car.glb\". car_paint_material: the material name to paint (pick it from the dropdown in the viewer), or null to let the viewer guess. car_credit: title, author, licence and link of the model, shown in the footer."
+}
