@@ -519,3 +519,46 @@ Findings 4–11, the cosine schedule and the demo.
 - Full regression on mock data: loader, training with the cosine schedule
   plus rendering loss plus scalar head, evaluation, held-out evaluation,
   demo export, overwrite guard.
+
+---
+
+## Audit 3 — 2026-10-08
+
+**Errors found**
+
+1. **The network cannot see how bright a photo is.** Every `conv_block` ends
+   in InstanceNorm, which removes each channel's image-wide mean and scale,
+   and the global track averaged the features *after* that norm. So the
+   whole network gives the same output for a photo and a uniformly darker
+   copy of it (verified: the mean predicted base colour changes by < 2e-5
+   between a photo and the same photo ×0.05; it holds for any weights). Absolute brightness, and therefore how dark or light a
+   paint is, can only be inferred indirectly from the AgX tone curve's
+   shape and from clipping. This applies to every run so far (1–9) and is a
+   plausible contributor to base colour's modest, unstable skill (the green
+   collapse). For v2 it is worse: each photo is normalised on its own, so
+   `MultiLightPaintNet` could not compare the flash photo's brightness with
+   the side-lit ones — the cue v2 relies on for the coat. **Fixed for v2**:
+   `prenorm_global` makes the global track average each block's first
+   convolution *before* its norm, as in Deschaintre 2018. It is on in
+   `MultiLightPaintNet`, recorded in each run's `config.json`, and off by
+   default in `CarPaintNet`, so v1 checkpoints and the demo behave exactly
+   as trained (verified bit-identical). Same parameters either way, so
+   `--init-from` still works. Check on random images whose only signal is
+   brightness, scored on unseen images: error 0.166 without the fix (no
+   better than guessing, 0.150), 0.006 with it.
+2. **Ground-truth maps were dithered.** Blender adds ±~1 code value of noise
+   to 8-bit output by default, the same size as the flake-normal errors
+   being measured. **Fixed in v5**: maps render with dither 0, photos keep
+   the default; recorded in `meta.json`, so a v5 folder started before this
+   fix refuses to resume. v3/v4 left unchanged, so their held-out test sets
+   match their training data.
+3. **`export_demo.py` deleted `--out` unconditionally.** A mistyped
+   `--out demo` would have wiped the site. **Fixed**: it refuses a non-empty
+   folder without the `manifest.json` it writes.
+4. Two unused car models (32 MB, one without a licence credit) were deployed
+   with the demo. **Removed.**
+
+**Open, not fixed:** Cycles' default pixel filter (~1.5 px) blends flake
+normals across cells only 2–4 px wide, so ground-truth normals are slightly
+softened and not unit length. A narrower `filter_width` for the map passes
+would reduce this, at the cost of aliasing.

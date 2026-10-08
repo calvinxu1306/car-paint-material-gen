@@ -525,6 +525,7 @@ def render_photos(plane, light_obj, p, lights, path_for, samples):
     scene = bpy.context.scene
     scene.cycles.samples = samples
     scene.cycles.use_denoising = True
+    scene.render.dither_intensity = PHOTO_DITHER
     set_view_transform("AgX")
     light_obj.hide_render = False
     apply_material(plane, build_paint_material(p))
@@ -539,6 +540,10 @@ def render_maps(plane, light_obj, p, path_for):
     light_obj.hide_render = True
     scene.cycles.samples = MAP_SAMPLES
     scene.cycles.use_denoising = False
+    # Blender dithers 8-bit output by default (+-~1 code value of noise per
+    # pixel). Fine for a photo, wrong for ground truth: it is the same size as
+    # the flake-normal errors being measured. Maps store exact values.
+    scene.render.dither_intensity = MAP_DITHER
 
     set_view_transform("Standard")  # colour -> sRGB-encoded
     apply_material(plane, build_emission_material("M_BaseColor", basecolor_socket, p))
@@ -588,6 +593,10 @@ def already_done(index, out_dir, n_side):
             and os.path.exists(os.path.join(out_dir, f"params_{tag}.json")))
 
 
+PHOTO_DITHER = 1.0   # Blender's default; hides 8-bit banding like camera noise
+MAP_DITHER = 0.0     # ground truth stores exact values (see render_maps)
+
+
 def write_meta(out_dir, n_side, samples, res):
     """Record exactly how this dataset was generated. The loaders read the
     ranges and photo names from here, so the code can't desync from the data."""
@@ -606,6 +615,7 @@ def write_meta(out_dir, n_side, samples, res):
         "coat_normal_png": "coat-layer orange-peel normal, same encoding",
         "resolution": res,
         "photo_samples": samples,
+        "dither": {"photos": PHOTO_DITHER, "maps": MAP_DITHER},
         "photos": photo_names(n_side),
         "lighting": {
             "camera": [0, 0, CAMERA_HEIGHT],

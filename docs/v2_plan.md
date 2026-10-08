@@ -92,6 +92,13 @@ Rendered with `paint_gallery.py` and three thickness/IOR sweeps:
 
 ### Pipeline checks (done 2026-10-07, on a 40-sample, 128 px test render)
 
+- **Brightness fix (2026-10-08, after the checks below).** The trunk's
+  InstanceNorm made every photo brightness-blind, so the network could not
+  compare the flash photo with the side-lit ones. `MultiLightPaintNet` now
+  uses `prenorm_global` (see `ablations.md`, Audit 3). Any 40-sample test
+  folder rendered before the v5 dither fix must be re-rendered into a new
+  folder; the generator refuses to resume it.
+
 - **Data.** `dataset_multi.py` self-test passes; every photo is pixel-aligned
   with its maps; masks follow the rules; the v1 loader also reads v5 folders.
 - **Overfit test caught a bug.** The first `MultiLightPaintNet` put an

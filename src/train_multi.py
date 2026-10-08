@@ -262,7 +262,8 @@ def main():
           f"{len(train_ds.photo_names)} photos each, {len(keys)} layer parameters")
 
     meta_path = os.path.join(args.root, "meta.json")
-    model_cfg = dict(n_scalars=len(keys), n_pigments=max(len(train_ds.pigments), 1))
+    model_cfg = dict(n_scalars=len(keys), n_pigments=max(len(train_ds.pigments), 1),
+                     prenorm_global=True)
     with open(os.path.join(args.out, "config.json"), "w") as f:
         json.dump({"args": vars(args), "model": "MultiLightPaintNet",
                    "model_cfg": model_cfg, "scalar_keys": keys,

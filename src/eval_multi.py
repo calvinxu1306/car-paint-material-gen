@@ -238,7 +238,8 @@ def main():
                          f"the data's {pigs}; the type head would be misread")
     max_photos = cfg["args"].get("max_photos") or len(eval_ds.photo_names)
     n_pig = max(len(pigs), 1)
-    model = MultiLightPaintNet(**cfg["model_cfg"]).to(device)
+    # Runs from before prenorm_global existed were trained without it.
+    model = MultiLightPaintNet(**{"prenorm_global": False, **cfg["model_cfg"]}).to(device)
     ckpt = torch.load(os.path.join(args.run, args.ckpt), map_location=device)
     model.load_state_dict(ckpt["model"])
     model.eval()
