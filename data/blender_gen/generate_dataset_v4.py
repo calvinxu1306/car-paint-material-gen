@@ -6,8 +6,13 @@ v2 and v3 always put the light exactly at the camera, so the specular hotspot
 sat dead centre in every training photo. The network could learn a shortcut
 ("the bright blob is always in the middle"), and when that shortcut is
 imperfect it bakes a blob into the centre of the predicted base colour - which
-tiling then repeats across the demo sphere. Real phone photos are rarely that
-tidy: the flash sits off the lens axis and the phone is held off-centre.
+tiling then repeats across the demo sphere.
+
+What v4 does and does not model: a phone's flash is ~1 cm from its lens, so in
+a real photo the hotspot leaves the centre mainly when the phone is TILTED.
+v4 keeps the camera square to the sample and moves the light sideways instead
+(Deschaintre's setup). That breaks the fixed-position shortcut, but it is not
+the geometry of a tilted phone, which would also give an oblique view.
 
 Deschaintre et al. 2018 render their training photos this way: "The light is a
 small white emitting sphere positioned in a plane parallel to the material
