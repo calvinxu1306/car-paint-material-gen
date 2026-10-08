@@ -172,6 +172,8 @@ def main():
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--schedule", choices=["constant", "cosine"], default="constant",
+                    help="learning-rate schedule; constant matches earlier runs")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--overfit", type=int, default=0,
                     help="sanity check: train on N samples, no validation")
@@ -231,8 +233,15 @@ def main():
     criterion = Criterion(args.map_weight, args.scalar_weight,
                           args.render_weight).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    # Cosine: start at --lr and glide down to 2% of it by the last epoch. Large
+    # steps early, small careful ones late - usually worth a few points when a
+    # run is still improving at the end.
+    scheduler = (torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=args.lr * 0.02)
+        if args.schedule == "cosine" else None)
 
     print(f"device: {device} | parameters: {count_params(model):,}")
+    print(f"learning rate: {args.lr} ({args.schedule})")
     print(f"loss: {args.map_weight} x map + {args.scalar_weight} x scalar"
           + (f" + {args.render_weight} x render" if args.render_weight else ""))
 
@@ -240,7 +249,7 @@ def main():
     with open(log_path, "w", newline="") as f:
         csv.writer(f).writerow(
             ["epoch", "train_loss", "val_loss", "val_map", "val_scalar",
-             "val_render", "seconds"]
+             "val_render", "seconds", "lr"]
             + [f"val_{c}" for c in MAP_CHANNELS]
             + [f"val_{k}" for k in SCALAR_KEYS])
 
@@ -252,12 +261,15 @@ def main():
         val_loss, vp, vchan, vscal, last = run_epoch(model, val_loader, device,
                                                      criterion)
         dt = time.time() - t0
+        lr_now = optimizer.param_groups[0]["lr"]
+        if scheduler is not None:
+            scheduler.step()
 
         with open(log_path, "a", newline="") as f:
             csv.writer(f).writerow(
                 [epoch, f"{train_loss:.6f}", f"{val_loss:.6f}",
                  f"{vp['map']:.6f}", f"{vp['scalar']:.6f}", f"{vp['render']:.6f}",
-                 f"{dt:.1f}"]
+                 f"{dt:.1f}", f"{lr_now:.2e}"]
                 + [f"{c:.6f}" for c in vchan] + [f"{s:.6f}" for s in vscal])
 
         flag = ""

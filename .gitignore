@@ -221,5 +221,7 @@ __marimo__/
 data/blender_gen/dataset_output/
 data/blender_gen/dataset_v2/
 data/blender_gen/dataset_v3/
+data/blender_gen/dataset_v4/
 runs/
 *.pt
+*.blend1

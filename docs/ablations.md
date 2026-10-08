@@ -11,8 +11,9 @@ metric — the report should also carry PSNR/SSIM and a re-rendered comparison.
 > **Read the audit section at the bottom first.** A 2026-09-27 audit found that
 > the v2 dataset put the flake normals on the clear coat as well as the base
 > layer, which is not physically how paint works. Runs 2 and 3 are kept as
-> recorded, but their findings are annotated. **Runs 4–5, on the corrected v3
-> data, are the results to report.**
+> recorded, but their findings are annotated. **Runs 4–5 (corrected v3 data),
+> Runs 6–8 (moving flash) and Run 9 (moving flash, trained to convergence —
+> the best model) are the results to report.**
 
 ---
 
@@ -236,8 +237,115 @@ with photo luminance, for a collapsed run (5) against a healthy one (4).
 
 ---
 
+## Runs 6–8 — moving the flash (lighting generalization)
+
+**Why.** v2 and v3 always lit the sample from exactly the camera position, so
+the specular hotspot sat dead centre in every training photo. In the demo, the
+Run 5 model's base-colour maps carried a residual blob at their centre, which
+tiling repeated across the sphere — a sign the network had learned where the
+hotspot *always is* rather than how to find it. Deschaintre et al. 2018 avoid
+this by placing the light "in a plane parallel to the material sample, at a
+random offset from the camera center".
+
+**Data: `dataset_v4`.** Same 2000 paints as v3 (sample *i* is the identical
+paint; the ground-truth maps are copied from v3 after a per-sample check), but
+the light moves up to ±1.6 units sideways at the camera's height, so the
+hotspot lands anywhere within the central ~75% of the frame (only 1.6% of
+samples have it near the centre).
+
+**Runs.** Run 6 = the Run 5 model (trained centred) evaluated on v4 photos.
+Run 7 = a new model trained on v4 (`runs/v4_joint`, 50 epochs, same settings
+as Run 5), evaluated on v4. Run 8 = the same v4 model evaluated on v3 photos.
+The validation paints are identical across all four cells; only the lighting
+differs, so the table is a paired comparison.
+
+| trained on → tested on | maps overall | base colour (avg) | roughness | metallic | coat roughness | flake scale | flake strength |
+|---|---|---|---|---|---|---|---|
+| centred → centred (Run 5) | 62.1% | 69.1% | 79.0% | 58.8% | 71.0% | 81.7% | **88.8%** |
+| centred → moved (Run 6) | 40.0% | 43.8% | 61.0% | 35.5% | 60.9% | 64.2% | **33.1%** |
+| moved → moved (Run 7) | 43.2% | 50.6% | 75.3% | 6.7% | 67.1% | 80.9% | **86.8%** |
+| moved → centred (Run 8) | 39.1% | 44.8% | 75.0% | 7.2% | 68.1% | 82.4% | **81.5%** |
+
+`coat_weight` and `peel_strength` stay at ~0% in every cell (Finding 5).
+
+**Finding 7 — the centred-flash model had learned a positional shortcut.**
+Moving the flash costs it 22 points on the maps and collapses flake strength
+from 88.8% to 33.1% (−56). Flake scale (−18), roughness (−18), metallic (−23)
+and coat roughness (−10) all drop too. The model was reading the paint relative
+to where the hotspot always was, not where it is.
+
+**Finding 8 — training with a moving flash makes the layer parameters
+robust.** The v4 model recovers flake strength (86.8%), flake scale (80.9%) and
+coat roughness (67.1%) with a moving flash — essentially matching the centred
+model on its own easy case — and keeps them when tested on centred photos
+(81.5 / 82.4 / 68.1%). Its layer-parameter skill changes by at most 5 points
+between lighting conditions, against 56 for the centred model. This is the
+result that matters for real photos, where the flash is never exactly centred.
+
+**Finding 9 — the per-pixel maps got harder and are not yet solved.** The v4
+model's maps sit at ~40%: roughness holds (75%), base colour is ~45–50%, and
+two channels collapsed to predicting the mean — metallic (6.7%) and the flake
+normals (x/y ≈ 0%). Its best checkpoint was the **final** epoch (50 of 50), so
+validation loss was still falling when training stopped: it is under-trained
+for the harder task, not shown to be incapable of it. Next step: train longer
+with a decaying learning rate before drawing conclusions about the maps.
+(Done as Run 9: mostly under-training, except the flake normals.)
+
+---
+
+## Run 9 — moving flash, trained longer
+
+`runs/v4_long`: same data and settings as Run 7, but 150 epochs with a cosine
+learning-rate schedule (2e-4 decaying to 4e-6; `--schedule cosine`).
+Evaluated on v4 (moving flash). Re-evaluating Run 7's checkpoint in the same
+session reproduced its table to the last digit, so the evaluation is
+deterministic and the comparison is clean.
+
+| channel | Run 7 (50 epochs) | Run 9 (150, cosine) | Run 5 (centred model, centred test) |
+|---|---|---|---|
+| maps overall | 43.2% | **57.1%** | 62.1% |
+| base colour R / G / B | 54.8 / 53.9 / 43.2% | 72.7 / 57.5 / 53.9% | 77.7 / 50.4 / 79.2% |
+| roughness | 75.3% | 80.1% | 79.0% |
+| metallic | 6.7% | **74.7%** | 58.8% |
+| normal x / y | 0.0 / −0.1% | **−0.1 / −0.1%** | 12.2 / 7.6% |
+| coat roughness | 67.1% | 68.2% (err 0.011) | 71.0% |
+| flake scale | 80.9% | **86.1%** (err 2.5) | 81.7% |
+| flake strength | 86.8% | **91.1%** (err 0.0068) | 88.8% |
+| coat weight / peel | ~0% | ~0% | ~0% |
+
+**Finding 10 — Finding 9 was mostly under-training.** With longer training,
+metallic recovers from 6.7% to 74.7% (better than the centred model's 58.8%),
+base colour and roughness rise, and the maps overall reach 57.1% — within 5
+points of the centred model on its own easy case, while also handling a moving
+flash. Flake strength (91.1%) and flake scale (86.1%) are now the best of any
+run. The moving-flash model trained to convergence is the best model in this
+project.
+
+**Finding 11 — flake statistics are recoverable; individual flakes are not.**
+The per-pixel flake normals stay at exactly the mean-predictor level (x/y skill
+≈ 0%) even after 150 epochs, while flake *strength* and *scale* — the
+statistics of the same flakes — are recovered at 91% and 86%. A flake's
+brightness depends on its tilt relative to the half-way vector between light
+and camera at that pixel. With the light at the camera (v3) that vector is
+fixed by pixel position, so the network could partly invert it (~10% skill).
+With the light in an unknown place, each pixel's tilt is ambiguous, and an L1
+loss is minimised by predicting the flat average. Interpretation: from one
+photo under unknown lighting, the network can tell *how* flaky the paint is but
+not *which way each flake points*. A loss that rewards plausible texture over
+per-pixel agreement (the perceptual/adversarial term of Guo et al. 2021, or the
+rendering-aware loss) is the standard response; alternatively, the recovered
+statistics can drive a procedural flake model, which only needs the
+statistics.
+
+---
+
 ## Not yet run
 
+- Run 9's model tested on centred photos (`--root dataset_v3`), to complete
+  its row of the lighting table
+- procedural flakes from predicted parameters (Finding 11): rebuild the flake
+  normal map from predicted `flake_scale` / `flake_strength` with the same
+  per-cell model the generator uses
 - extra seeds for the Run 4 / Run 5 pair (`--seed 1`, `--seed 2`), to size
   run-to-run noise and settle Finding 6 and the green instability
 - green-channel diagnostic (see open problem above)
