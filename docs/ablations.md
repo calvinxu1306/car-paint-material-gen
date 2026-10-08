@@ -15,6 +15,10 @@ metric — the report should also carry PSNR/SSIM and a re-rendered comparison.
 > Runs 6–8 (moving flash) and Run 9 (moving flash, trained to convergence —
 > the best model) are the results to report.**
 
+> **v2 (from 2026-10-07):** runs on the multi-light v5 data will be logged
+> here as Runs 10 onward. Their predictions were written down before
+> running, in `v2_plan.md` §4.
+
 ---
 
 ## Run 1 — v1 data, maps only
