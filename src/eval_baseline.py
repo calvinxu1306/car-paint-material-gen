@@ -19,9 +19,19 @@ Layer parameters are also reported in REAL units, which is what's actually
 interpretable: "coat_roughness is off by 0.012 on a 0.01-0.1 range" says
 something; a normalised number doesn't.
 
-RUN (point --root at the dataset the checkpoint was trained on):
-    python src/eval_baseline.py --root data/blender_gen/dataset_v3 \
-        --ckpt runs/v3_joint/best.pt
+WHICH SAMPLES IT SCORES
+By default it scores the validation split of --root. Those are the same
+samples train.py used to choose best.pt, so the numbers are slightly
+optimistic: the checkpoint was picked partly for doing well on them. For
+numbers you report, score a separate held-out test set that nothing ever
+trained on or selected with:
+
+    python src/eval_baseline.py --root data/blender_gen/dataset_v4 \
+        --test-root data/blender_gen/dataset_v4_test --ckpt runs/v4_long/best.pt
+
+--root is still the dataset the checkpoint was TRAINED on: the do-nothing
+baseline is the average of its training split, and its scalar ranges are the
+ones the model learned. The whole --test-root folder is scored.
 """
 
 from __future__ import annotations
@@ -115,8 +125,11 @@ def table(names, mean_err, model_err, unit_scale=None, unit_note=""):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="data/blender_gen/dataset_v2")
-    ap.add_argument("--ckpt", default="runs/v3/best.pt")
+    ap.add_argument("--root", default="data/blender_gen/dataset_v4",
+                    help="dataset the checkpoint was trained on")
+    ap.add_argument("--test-root", default=None,
+                    help="held-out folder to score in full (default: --root's val split)")
+    ap.add_argument("--ckpt", default="runs/v4_long/best.pt")
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--device", default="auto")
     args = ap.parse_args()
@@ -125,19 +138,33 @@ def main():
     device = pick_device(args.device)
 
     train_ds = CarPaintDataset(args.root, split="train")
-    val_ds = CarPaintDataset(args.root, split="val")
+    if args.test_root:
+        eval_ds = CarPaintDataset(args.test_root, split="all")
+        if eval_ds.scalar_ranges != train_ds.scalar_ranges:
+            raise SystemExit(
+                f"{args.test_root} was generated with different scalar ranges than "
+                f"{args.root}; the model's normalised outputs would be misread.")
+        overlap = set(eval_ds.indices) & set(CarPaintDataset(args.root, split="all").indices)
+        if overlap:
+            print(f"WARNING: {len(overlap)} test indices also exist in {args.root} "
+                  f"(same seed = same paint). The test set is not fully held out.")
+        where = f"held-out test set {args.test_root}"
+    else:
+        eval_ds = CarPaintDataset(args.root, split="val")
+        where = f"validation split of {args.root} (also used to pick best.pt)"
     train_loader = DataLoader(train_ds, batch_size=args.batch_size)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size)
+    eval_loader = DataLoader(eval_ds, batch_size=args.batch_size)
 
     model = CarPaintNet().to(device)
     ckpt = torch.load(args.ckpt, map_location=device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     print(f"loaded {args.ckpt} (epoch {ckpt.get('epoch', '?')}) on {device}")
-    print(f"train {len(train_ds)} / val {len(val_ds)} samples\n")
+    print(f"scoring {len(eval_ds)} samples: {where}")
+    print(f"baseline = average of {len(train_ds)} training samples\n")
 
     m_means, s_means = training_means(train_loader)
-    model_m, mean_m, model_s, mean_s = evaluate(model, val_loader, device,
+    model_m, mean_m, model_s, mean_s = evaluate(model, eval_loader, device,
                                                 m_means, s_means)
 
     print("PER-PIXEL MAPS")

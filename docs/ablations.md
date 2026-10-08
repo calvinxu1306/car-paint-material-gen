@@ -15,6 +15,10 @@ metric — the report should also carry PSNR/SSIM and a re-rendered comparison.
 > Runs 6–8 (moving flash) and Run 9 (moving flash, trained to convergence —
 > the best model) are the results to report.**
 
+> **v2 (from 2026-10-07):** runs on the multi-light v5 data will be logged
+> here as Runs 10 onward. Their predictions were written down before
+> running, in `v2_plan.md` §4.
+
 ---
 
 ## Run 1 — v1 data, maps only
@@ -240,7 +244,12 @@ with photo luminance, for a collapsed run (5) against a healthy one (4).
 ## Runs 6–8 — moving the flash (lighting generalization)
 
 **Why.** v2 and v3 always lit the sample from exactly the camera position, so
-the specular hotspot sat dead centre in every training photo. In the demo, the
+the specular hotspot sat dead centre in every training photo. (In a real phone
+photo the flash is about 1 cm from the lens, so the hotspot moves off-centre
+mainly when the phone is *tilted*. v4 instead keeps the camera square to the
+sample and moves the light sideways — Deschaintre's setup. It breaks the
+fixed-position shortcut, but it is not the same geometry as a tilted phone:
+see Known limitations.) In the demo, the
 Run 5 model's base-colour maps carried a residual blob at their centre, which
 tiling repeated across the sphere — a sign the network had learned where the
 hotspot *always is* rather than how to find it. Deschaintre et al. 2018 avoid
@@ -278,8 +287,8 @@ to where the hotspot always was, not where it is.
 robust.** The v4 model recovers flake strength (86.8%), flake scale (80.9%) and
 coat roughness (67.1%) with a moving flash — essentially matching the centred
 model on its own easy case — and keeps them when tested on centred photos
-(81.5 / 82.4 / 68.1%). Its layer-parameter skill changes by at most 5 points
-between lighting conditions, against 56 for the centred model. This is the
+(81.5 / 82.4 / 68.1%). Its layer-parameter skill changes by about 5 points
+or less between lighting conditions, against 56 for the centred model. This is the
 result that matters for real photos, where the flash is never exactly centred.
 
 **Finding 9 — the per-pixel maps got harder and are not yet solved.** The v4
@@ -314,24 +323,33 @@ deterministic and the comparison is clean.
 | coat weight / peel | ~0% | ~0% | ~0% |
 
 **Finding 10 — Finding 9 was mostly under-training.** With longer training,
-metallic recovers from 6.7% to 74.7% (better than the centred model's 58.8%),
-base colour and roughness rise, and the maps overall reach 57.1% — within 5
-points of the centred model on its own easy case, while also handling a moving
-flash. Flake strength (91.1%) and flake scale (86.1%) are now the best of any
-run. The moving-flash model trained to convergence is the best model in this
-project.
+metallic recovers from 6.7% to 74.7%, base colour and roughness rise, and the
+maps overall reach 57.1%. Flake strength (91.1%) and flake scale (86.1%) are
+now the best of any run. Run 9 is the best model in this project.
+
+*Audit caveat (2026-10-07):* comparing Run 9 with Run 5 ("within 5 points of
+the centred model", "metallic better than the centred model's 58.8%") is not a
+fair fight — Run 9 had three times the training plus a decaying learning rate,
+and the centred model never got that. A centred model trained the same way
+might also improve. And Run 9's best epoch was not recorded (the header line
+of that evaluation was not captured), so "trained to convergence" is
+unverified; if best.pt is again the final epoch, it was still improving.
 
 **Finding 11 — flake statistics are recoverable; individual flakes are not.**
 The per-pixel flake normals stay at exactly the mean-predictor level (x/y skill
 ≈ 0%) even after 150 epochs, while flake *strength* and *scale* — the
 statistics of the same flakes — are recovered at 91% and 86%. A flake's
-brightness depends on its tilt relative to the half-way vector between light
-and camera at that pixel. With the light at the camera (v3) that vector is
-fixed by pixel position, so the network could partly invert it (~10% skill).
-With the light in an unknown place, each pixel's tilt is ambiguous, and an L1
-loss is minimised by predicting the flat average. Interpretation: from one
-photo under unknown lighting, the network can tell *how* flaky the paint is but
-not *which way each flake points*. A loss that rewards plausible texture over
+brightness depends only on the *angle* between its normal and the half-way
+vector between light and camera at that pixel, so one brightness value fits a
+whole ring of tilts: even with the lighting known exactly, the direction a
+single flake leans is not recoverable from one photo. With the light always at
+the camera (v3), the half-way vector at each pixel points back towards the
+image centre, so bright flakes tend to lean towards the centre — a positional
+prior the network could exploit for its ~10% skill, the same kind of shortcut
+as Finding 7. Once the light moves, that prior disappears, and an L1 loss is
+minimised by the median tilt, which for symmetric flakes is flat.
+Interpretation: from one photo the network can tell *how* flaky the paint is
+but not *which way each flake points*. A loss that rewards plausible texture over
 per-pixel agreement (the perceptual/adversarial term of Guo et al. 2021, or the
 rendering-aware loss) is the standard response; alternatively, the recovered
 statistics can drive a procedural flake model, which only needs the
@@ -341,8 +359,15 @@ statistics.
 
 ## Not yet run
 
-- Run 9's model tested on centred photos (`--root dataset_v3`), to complete
-  its row of the lighting table
+- **Held-out test sets** (highest priority for the report): 300 fresh samples
+  per lighting condition at indices 2000+, scored with `--test-root`, so the
+  reported numbers come from samples never used for training *or* for
+  choosing checkpoints. Re-score Runs 5–9 on them; that table replaces the
+  validation-split numbers above as the reportable result.
+- Run 9's model tested on centred photos, to complete its row of the lighting
+  table (fold into the held-out re-scoring)
+- a centred model trained like Run 9 (150 epochs, cosine), to make the Run 9 vs
+  Run 5 comparison budget-matched
 - procedural flakes from predicted parameters (Finding 11): rebuild the flake
   normal map from predicted `flake_scale` / `flake_strength` with the same
   per-cell model the generator uses
@@ -371,7 +396,18 @@ statistics.
 - Trained and evaluated entirely on synthetic Blender renders. The
   synthetic-to-real gap is unmeasured (the planned real paint-chip test set
   was not captured).
-- Every result is a single seed.
+- Every result is a single seed. Across runs trained on the same kind of data,
+  the layer-parameter scores agree within ~5 points (flake strength 88.8 /
+  86.8 / 91.1%), so their large effects are trustworthy; base colour, green
+  especially, has ranged over 48 points, so base-colour differences of less
+  than ~25 points between single runs should not be interpreted.
+- Checkpoints are chosen on the same validation split the scores are reported
+  on, which makes every number in Runs 1–9 slightly optimistic (see the
+  held-out test sets under Not yet run).
+- Camera tilt is never varied. Every photo is taken square to the sample. A
+  handheld phone is rarely square, and tilting gives an oblique, perspective
+  view with the flash still beside the lens — a condition none of the
+  datasets contain.
 - The rendering loss's own renderer (`src/models/render.py`) treats image row 0
   as y = −1, while Blender's image row 0 is +y. It renders prediction and
   target identically and samples lights symmetrically, so the loss is
@@ -431,3 +467,98 @@ Full re-check of code, data, metrics and notes before moving to the demo.
   failure case; MaterialGAN's 3–7 inputs, ~2 min for 2000 iterations, stated
   limitations; Günther's 8 paints in Table 1 and black-felt studio; Kneiphof's
   K = 3 lobes, cubemap array and SVD; Ershov's gloss/glitter/shade).
+
+---
+
+## Audit 2 — 2026-10-07
+
+Re-check of everything added since audit 1: the v3 and v4 data, Runs 4–9,
+Findings 4–11, the cosine schedule and the demo.
+
+**Errors and overclaims found**
+
+1. **Checkpoint selection and reporting used the same samples.** `train.py`
+   keeps the epoch with the lowest loss on the validation split, and
+   `eval_baseline.py` reported skill on that same split. Every number in Runs
+   1–9 is therefore slightly optimistic. **Fixed**: `eval_baseline.py` now
+   takes `--test-root` to score a separate held-out folder, warns if its
+   samples overlap the training data, and refuses if its scalar ranges differ.
+   Held-out test sets are the top item under Not yet run.
+2. **Finding 10 compared unequal training budgets** (Run 9: 150 epochs +
+   cosine; Run 5: 50 epochs, constant) and claimed convergence without a
+   recorded best epoch. **Annotated** in Finding 10.
+3. **v4's stated motivation was physically off.** It said real photos have an
+   off-centre hotspot because "the flash sits off the lens axis and the phone
+   is held off-centre". A phone flash is ~1 cm from the lens, and holding a
+   square-on phone off-centre does not move the hotspot; *tilting* does, which
+   v4 does not model. **Fixed** in the v4 script's docstring and the Runs 6–8
+   "Why"; camera tilt added to Known limitations.
+4. **Finding 11's mechanism was imprecise.** It implied a known light makes
+   flake direction recoverable. Brightness only fixes the angle to the
+   half-way vector (a ring of tilts), so direction is ambiguous even with
+   known lighting; v3's ~10% is better explained as a positional shortcut.
+   **Rewritten.**
+5. **The public demo page overclaimed.** It said the network "recovers its
+   three layers", stated Finding 5's untested explanation as fact, and said
+   "flakes come through the normal map" — false for the Run 9 model, whose
+   normal map is flat. **Fixed** in `demo/index.html`.
+6. Minor: Finding 8 said "at most 5 points" for a 5.3-point change (reworded).
+
+**Checked and fine**
+
+- Every number in Runs 6–9 matches the pasted evaluation output. Run 6's table
+  arrived without its header line; it is identified by command order and is
+  consistent with that (its metallic skill of 35.5% is impossible for the v4
+  model, which scored 6.7–7.2% in the other two tables).
+- The 2×2 lighting comparison is fair: Runs 5–8 all used 50 epochs at a
+  constant learning rate, and every cell scores the same 200 paints.
+- No leakage: the validation paints (indices 1800–1999) are unseen by every
+  model in every cell.
+- v4's hotspot geometry (halfway between camera and light, for equal heights)
+  and its v3 pairing (2000/2000 paints identical) were re-verified.
+- Full regression on mock data: loader, training with the cosine schedule
+  plus rendering loss plus scalar head, evaluation, held-out evaluation,
+  demo export, overwrite guard.
+
+---
+
+## Audit 3 — 2026-10-08
+
+**Errors found**
+
+1. **The network cannot see how bright a photo is.** Every `conv_block` ends
+   in InstanceNorm, which removes each channel's image-wide mean and scale,
+   and the global track averaged the features *after* that norm. So the
+   whole network gives the same output for a photo and a uniformly darker
+   copy of it (verified: the mean predicted base colour changes by < 2e-5
+   between a photo and the same photo ×0.05; it holds for any weights). Absolute brightness, and therefore how dark or light a
+   paint is, can only be inferred indirectly from the AgX tone curve's
+   shape and from clipping. This applies to every run so far (1–9) and is a
+   plausible contributor to base colour's modest, unstable skill (the green
+   collapse). For v2 it is worse: each photo is normalised on its own, so
+   `MultiLightPaintNet` could not compare the flash photo's brightness with
+   the side-lit ones — the cue v2 relies on for the coat. **Fixed for v2**:
+   `prenorm_global` makes the global track average each block's first
+   convolution *before* its norm, as in Deschaintre 2018. It is on in
+   `MultiLightPaintNet`, recorded in each run's `config.json`, and off by
+   default in `CarPaintNet`, so v1 checkpoints and the demo behave exactly
+   as trained (verified bit-identical). Same parameters either way, so
+   `--init-from` still works. Check on random images whose only signal is
+   brightness, scored on unseen images: error 0.166 without the fix (no
+   better than guessing, 0.150), 0.006 with it.
+2. **Ground-truth maps were dithered.** Blender adds ±~1 code value of noise
+   to 8-bit output by default, the same size as the flake-normal errors
+   being measured. **Fixed in v5**: maps render with dither 0, photos keep
+   the default; recorded in `meta.json`, so a v5 folder started before this
+   fix refuses to resume. v3/v4 left unchanged, so their held-out test sets
+   match their training data.
+3. **`export_demo.py` deleted `--out` unconditionally.** A mistyped
+   `--out demo` would have wiped the site. **Fixed**: it refuses a non-empty
+   folder without the `manifest.json` it writes.
+4. Two unused car models (32 MB, one without a licence credit) were deployed
+   with the demo. **Removed.**
+
+**Open, not fixed:** Cycles' default pixel filter (~1.5 px) blends flake
+normals across cells only 2–4 px wide, so ground-truth normals are slightly
+softened and not unit length. A narrower `filter_width` for the map passes
+would reduce this, at the cost of aliasing.

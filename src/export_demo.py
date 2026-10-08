@@ -94,6 +94,13 @@ def main():
     ap.add_argument("--device", default="auto")
     args = ap.parse_args()
 
+    # --out gets deleted and rewritten, so make sure this script wrote it. A
+    # mistyped --out (say "demo") must not wipe the whole site.
+    if (os.path.isdir(args.out) and os.listdir(args.out)
+            and not os.path.exists(os.path.join(args.out, "manifest.json"))):
+        sys.exit(f"{args.out} is not empty and has no manifest.json, so it wasn't "
+                 f"written by export_demo.py. Refusing to delete it.")
+
     device = pick_device(args.device)
     ds = CarPaintDataset(args.root, split="val")
     ranges = ds.scalar_ranges
@@ -107,8 +114,10 @@ def main():
     n = min(args.n, len(ds))
     picks = np.linspace(0, len(ds) - 1, n).round().astype(int)
 
+    # Stale samples from an older model mislead, so the folder is replaced
+    # (checked above: only one this script wrote).
     if os.path.isdir(args.out):
-        shutil.rmtree(args.out)      # stale samples from an older model mislead
+        shutil.rmtree(args.out)
     os.makedirs(args.out)
 
     samples = []

@@ -6,6 +6,12 @@
 
 **Suggested pace:** 8 weeks full-time, or ~12–14 weeks at a few focused evenings/weekends per week. Each week below has Goals / Tasks / Reading / Deliverable so you can compress or stretch as needed.
 
+> **Update 2026-10-07 — v2.** Weeks 1–4 and 7 are done for metallic paint
+> (v1; results in `ablations.md`). The project now extends to every paint
+> type — solid, metallic, pearl, colour-shift, candy, gloss or matte — using a
+> flash photo plus a few side-lit photos. That replaces Weeks 5–6 for now.
+> Current plan: `docs/v2_plan.md`.
+
 ---
 
 ## Week 0 (optional buffer) — Setup

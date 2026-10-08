@@ -217,11 +217,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# generated training data
+# generated training data (every dataset_* folder: v2, v3, v4, v5, *_test, ...)
 data/blender_gen/dataset_output/
-data/blender_gen/dataset_v2/
-data/blender_gen/dataset_v3/
-data/blender_gen/dataset_v4/
+data/blender_gen/dataset_*/
+data/blender_gen/gallery/
+data/blender_gen/v5_smoke/
 runs/
 *.pt
 *.blend1

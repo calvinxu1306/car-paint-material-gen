@@ -32,7 +32,7 @@
     <aside class="panel">
       <header>
         <h1>Car paint from one photo</h1>
-        <p class="lede">A network looks at a single flash photo of paint and recovers its three layers: base coat, metallic flakes and clear coat. These samples were held out from training.</p>
+        <p class="lede">A network looks at a single flash photo of car paint and estimates its layers: the base coat's colour, roughness and metalness, how strong and how large its metallic flakes are, and how glossy its clear coat is. These samples were held out from training.</p>
       </header>
 
       <div class="block">
@@ -61,7 +61,7 @@
           <thead><tr><th>Layer parameter</th><th>Predicted</th><th>True</th></tr></thead>
           <tbody id="param-rows"></tbody>
         </table>
-        <p class="note">Greyed rows are not recoverable from a flash photo taken in a dark room: the clear coat reflects only the flash, so its strength and ripple leave almost no trace. Flakes come through the normal map, not the numbers.</p>
+        <p class="note">Greyed rows were not recovered: the network does no better than guessing the average. The likely reason is the capture setup — in a dark room the clear coat reflects only the flash, leaving almost no trace of its strength or ripple. The network also estimates how flaky the paint is, but not which way each individual flake points, so the predicted flake map can look smoother than the true one.</p>
       </div>
 
       <div class="block">

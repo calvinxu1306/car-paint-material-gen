@@ -240,6 +240,9 @@ function escapeHtml(s) {
 
 // ---------------------------------------------------------------- car
 function paintFor(mesh) {
+  // A part exported without normals renders black under a lit material. The
+  // model's own material hides this (the loader flat-shades it); ours can't.
+  if (!mesh.geometry.attributes.normal) mesh.geometry.computeVertexNormals();
   return mesh.geometry.attributes.uv ? paint : paintFlat;
 }
 
@@ -345,9 +348,28 @@ async function tryLoadCar() {
   state.car = { group, meshes, originals, materials, height: box.max.y };
 
   // What was found, for anyone debugging a new model (open the console).
-  console.table([...materials].map(([name, i]) => ({
-    material: name, parts: i.parts, hidden: i.hidden, 'flat only': i.area === 0,
-  })));
+  const report = new Map();
+  for (const m of meshes) {
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    for (const mat of mats) {
+      const r = report.get(mat.name) || { box: new THREE.Box3(), uv: 0, normals: 0, parts: 0 };
+      r.box.expandByObject(m);
+      r.parts += 1;
+      r.uv += m.geometry.attributes.uv ? 1 : 0;
+      r.normals += m.geometry.attributes.normal ? 1 : 0;
+      report.set(mat.name, r);
+    }
+  }
+  console.log(`car scaled to longest side 3.2, height ${box.max.y.toFixed(2)}`);
+  console.table([...report].map(([name, r]) => {
+    const s = r.box.getSize(new THREE.Vector3());
+    return {
+      material: name, parts: r.parts,
+      'with UVs': `${r.uv}/${r.parts}`, 'with normals': `${r.normals}/${r.parts}`,
+      size: `${s.x.toFixed(2)} x ${s.y.toFixed(2)} x ${s.z.toFixed(2)}`,
+      hidden: materials.get(name).hidden, flat: materials.get(name).area === 0,
+    };
+  }));
 
   const select = $('paint-select');
   select.innerHTML = [...materials].map(([n, i]) => {
