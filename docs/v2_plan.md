@@ -307,6 +307,8 @@ and iridescent glass backs, reusing the v5 shader and model (see
 
 ## 6. Real-paint capture protocol (for Phase 5)
 
+Printable checklist: `capture_kit.md` (it refines this protocol: flat cards rather than spoons, a glossy black sheet, set torch positions); check the photos with `src/check_capture.py` before taking the setup down.
+
 **Swatches.** Nail polish and model-kit paints come in every finish: solid,
 matte top coat, metallic, pearl, candy (clear colour over silver) and
 "chameleon". Paint each on a flat card or plastic spoon. 3–4 of each type is
