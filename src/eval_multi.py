@@ -45,6 +45,11 @@ RUN
 Without --test-root it scores the validation split, which also chose best.pt
 (slightly optimistic). Use the held-out test set for numbers you report.
 --json results.json saves everything for the write-up.
+
+A run trained with --hdr-input is scored on the .exr photos (log-encoded),
+exactly as it trained - no flag needed, config.json says so. Its test set
+must then be rendered with --hdr too:
+    python src/eval_multi.py --run runs/v5_hdr --test-root data/blender_gen/dataset_v5_hdr_test
 """
 
 from __future__ import annotations
@@ -204,10 +209,16 @@ def main():
         cfg = json.load(f)
     root = args.root or cfg["args"]["root"]
     device = pick_device(args.device)
+    # Read the photos the way the run trained on them (runs from before
+    # --hdr-input read PNGs). The baselines' dataset only uses the targets but
+    # is opened the same way, because with hdr a sample only counts if its
+    # .exr photos exist: opened as PNG it could find samples, and so a train
+    # split, the run never had. Costs one small .exr read per training sample.
+    hdr = cfg["args"].get("hdr_input", False)
 
-    train_ds = MultiLightDataset(root, split="train")
+    train_ds = MultiLightDataset(root, split="train", hdr=hdr)
     if args.test_root:
-        eval_ds = MultiLightDataset(args.test_root, split="all")
+        eval_ds = MultiLightDataset(args.test_root, split="all", hdr=hdr)
         # Must match exactly, or the model's outputs would be misread.
         for attr in ("scalar_keys", "scalar_ranges", "pigments", "photo_names"):
             if getattr(eval_ds, attr) != getattr(train_ds, attr):
@@ -221,18 +232,19 @@ def main():
         if differ:
             print(f"NOTE: test and training folders were generated with different "
                   f"settings: {differ}. Fine if intended (e.g. a harder test set).")
-        overlap = set(eval_ds.indices) & set(MultiLightDataset(root, split="all").indices)
+        overlap = (set(eval_ds.indices)
+                   & set(MultiLightDataset(root, split="all", hdr=hdr).indices))
         if overlap:
             print(f"WARNING: {len(overlap)} test indices also exist in {root} "
                   f"(same seed = same paint). The test set is not fully held out.")
         where = f"held-out test set {args.test_root}"
     else:
-        eval_ds = MultiLightDataset(root, split="val")
+        eval_ds = MultiLightDataset(root, split="val", hdr=hdr)
         # Score exactly the samples train_multi.py validated on, even if the
         # folder has grown since (the split is "last 10%", which would move).
         saved = cfg.get("val_indices")
         if saved is not None and saved != eval_ds.indices:
-            have = set(MultiLightDataset(root, split="all").indices)
+            have = set(MultiLightDataset(root, split="all", hdr=hdr).indices)
             eval_ds.indices = [i for i in saved if i in have]
             print(f"NOTE: {root} changed since training; scoring the "
                   f"{len(eval_ds.indices)} samples the run actually validated on.")
@@ -257,13 +269,14 @@ def main():
     model.load_state_dict(ckpt["model"])
     model.eval()
     print(f"loaded {args.run}/{args.ckpt} (epoch {ckpt.get('epoch', '?')}), "
-          f"trained with photos={policy}, up to {max_photos} per sample")
+          f"trained with photos={policy}, up to {max_photos} per sample"
+          + (", HDR photos (.exr, log-encoded)" if hdr else ""))
     print(f"scoring {len(eval_ds)} samples: {where}")
     print(f"baselines from {len(train_ds)} training samples\n")
 
     # Baselines only need targets, so load just one photo per training sample.
     map_mean, s_mean, ps_mean = training_means(
-        MultiLightDataset(root, split="train", photos=["photo"]), n_pig)
+        MultiLightDataset(root, split="train", photos=["photo"], hdr=hdr), n_pig)
     # Runs that always had the flash photo, and flash-slot models (which read
     # photos[:, 0] as the flash photo), are only scored on sets that contain it.
     require_flash = (policy in ("flash", "flash+random")

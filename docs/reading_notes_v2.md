@@ -89,17 +89,23 @@ terms prohibit AI use of the standards themselves).
   thin film, coat with absorption (tint), fuzz. No flake layer — the flakes
   stay this project's own procedural part.
 - **Blender manual, Principled BSDF** (4.2) —
-  [docs](https://docs.blender.org/manual/en/4.2/render/shader_nodes/shader/principled.html).
-  Coat Tint is absorption inside the coat: "saturation increases at shallower
-  angles", depending on the coat IOR. Coat Weight scales both the coat's
-  reflection *and* its tint (weight 0 removes the tint too), which is why
-  `coat_weight` is learnable for candy only (Finding 13). Worked out for v5
-  (coat IOR left at the default 1.5, camera overhead): refraction bends the
-  light towards the normal, so the path through the coat is 2.00 coat
-  thicknesses for the flash and only 2.04–2.28 for the side lights (65° to
-  20° above the surface; 2.34 at grazing). The tint deepens by at most ~14%
-  across a sample's photos, so candy vs. a coloured metallic base is close
-  to ambiguous in this capture.
+  [docs](https://docs.blender.org/manual/en/4.2/render/shader_nodes/shader/principled.html),
+  and the Cycles source (`bsdf_coat_setup` / `slab_color_at_angle` in
+  `intern/cycles/kernel/closure/bsdf_microfacet.h`). Coat Tint is absorption
+  inside the coat: "saturation increases at shallower angles", depending on
+  the coat IOR. Coat Weight scales both the coat's reflection *and* its tint
+  (weight 0 removes the tint too), which is why `coat_weight` is learnable
+  for candy only (Finding 13). How Cycles does it: the tint is raised to the
+  power 1/cos(refracted angle) of the **viewing** direction only
+  (`cosNI = dot(sd->wi, N)`; its comment says it has no access to the light
+  direction and assumes both paths through the coat are equal). For v5, with
+  the camera fixed overhead, that is tint^1.00 at the image centre and
+  ~tint^1.03 in the corners, identical in all six photos of a sample: the
+  side lights carry **no** information about candy's tint, so candy vs. a
+  coloured metallic base is ambiguous in this data by construction.
+  (Corrected 2026-10-09: an earlier version of this note worked out a
+  light-dependent path of 2.00–2.28 coat thicknesses; real coats behave
+  roughly like that, but Blender's renders do not.)
 - **Sung et al. 2002**, *Optical Reflectance of Metallic Coatings: Effect of
   Aluminum Flake Orientation* — [paint.org](https://www.paint.org/ct-archives/optical-reflectance-of-metallic-coatings-effect-of-aluminum-flake-orientation/jctsept02-sung).
   Measured flake tilts have heavier tails than a Gaussian; a candidate change
