@@ -238,11 +238,55 @@ Blender material from the network's prediction, render it under the held-out
 light, and compare with the real photo.
 
 ### Phase 6 — demo
-three.js `MeshPhysicalMaterial` already has `iridescence`,
-`iridescenceIOR` and `iridescenceThicknessRange`, matching film IOR and
-thickness. Add a light-angle slider so the colour shift is visible, and
-glTF export via `KHR_materials_iridescence`. Candy needs an approximation:
-three.js has no clear-coat tint.
+A second page, `demo/v2.html` (code in `demo/v2.js`), shows a v2 run: a
+sphere with the predicted or true material, a light you can move, the
+sample's flash and side photos, all 10 layer parameters predicted vs. true,
+and the predicted paint type with its probabilities. Its assets come from
+`src/export_demo_multi.py`, which runs a `train_multi.py` run on 12 samples
+spread over the five paint types:
+```
+python src/export_demo_multi.py --run runs/v5_multi --test-root data/blender_gen/dataset_v5_test
+cd demo
+python -m http.server 8000
+```
+then open http://localhost:8000/v2.html. Without `--test-root` it exports
+from the run's validation split (the samples `eval_multi.py` scores without
+`--test-root`). The network is shown the photos the run trained on: the flash
+photo alone for `--photos flash`, otherwise the flash photo and side photos
+up to `--max-photos`. Output goes to `demo/assets/samples_v2/`, which is
+replaced on every export; the script refuses to delete a folder it did not
+write (including v1's `demo/assets/samples/`). Without exported samples the
+page says so and shows the command.
+
+`index.html` does not link to `v2.html` yet: GitHub Pages would publish the
+link before any samples exist. Commit `demo/assets/samples_v2/` first, then
+add the link.
+
+How the sphere maps the parameters, and what is approximated:
+- **Base, flakes, clear coat:** as in v1 (base colour, roughness, metallic and
+  flake-normal textures; `clearcoat` = coat weight, `clearcoatRoughness` =
+  coat roughness).
+- **Thin film:** `iridescence` = 1, `iridescenceIOR` = film IOR,
+  `iridescenceThicknessRange` = [d, d] with d the film thickness in nm; 0
+  when the paint has no film. A *predicted* film thinner than 50 nm counts
+  as no film (the network can't output exactly 0; the thinnest real film in
+  v5 is 100 nm). Approximate: three.js works out the film's colour from the
+  viewing angle alone (Blender from the angle between light and viewer, via
+  the half-vector; the two agree in a sharp highlight on the sphere) and as if
+  the film faced air, while in v5 it lies under the clear coat. Colours are
+  close, not exact.
+- **Candy coat tint:** three.js has no clear-coat tint, so the base colour is
+  multiplied by tint² (light crosses the coat twice). Blender's tint also
+  deepens towards grazing angles, where the path through the coat is longer;
+  the page doesn't show that.
+- **Not drawn:** orange peel (one number, no map), and flake *size* (the
+  "Flake size on object" slider sets it, as in v1).
+- **Lighting:** one directional light, placed relative to the view
+  (elevation 5–90°, azimuth all round; 5° and 0° is the flash position), plus
+  an optional dim `RoomEnvironment`. "Light only" is closest to the dark-room
+  training photos. AgX tone mapping, as in the v5 photos.
+
+Still to do: glTF export via `KHR_materials_iridescence`.
 
 ### Phase 7 — extension: device finishes
 A second generator branch for anodized/sandblasted aluminium, frosted glass

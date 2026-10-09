@@ -156,3 +156,70 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   .panel { border-left: 0; border-top: 1px solid var(--line); padding: 20px 16px 28px; }
   .grid { grid-template-columns: repeat(4, 1fr); }
 }
+
+/* ---- v2 viewer (v2.html) ----
+   Everything below is for v2.html only: every selector names a v2- class,
+   which index.html never uses, so the v1 page is unaffected. */
+.v2-photos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.v2-photos .v2-unseen img { opacity: 0.35; }
+.v2-maps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+
+.v2-type { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+.v2-type strong { color: var(--text); font-weight: 600; }
+.v2-type .v2-right { color: #8fd6a0; }
+.v2-type .v2-wrong { color: #f0a08f; }
+
+.v2-probs { display: grid; gap: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.v2-prob { display: grid; grid-template-columns: 112px 1fr 40px; gap: 8px; align-items: center; color: var(--muted); }
+.v2-prob small { font-size: 10px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em; }
+.v2-prob.v2-true .v2-prob-name { color: var(--text); }
+.v2-bar { height: 8px; background: #0f1115; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.v2-bar span { display: block; height: 100%; background: var(--faint); }
+.v2-prob.v2-pred .v2-bar span { background: var(--accent); }
+.v2-prob-val { text-align: right; }
+
+.v2-colours { margin-top: 14px; }
+.v2-swatch { display: inline-block; width: 30px; height: 14px; border-radius: 4px; border: 1px solid var(--line); vertical-align: middle; }
+
+.v2-slider-head { display: flex; justify-content: space-between; }
+.v2-slider-head output { color: var(--text); font-variant-numeric: tabular-nums; }
+.v2-light-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.v2-btn {
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  background: #0f1115;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.v2-btn:hover { color: var(--text); }
+
+.v2-gallery button { position: relative; }
+.v2-tag {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  font-size: 9px;
+  line-height: 1.6;
+  text-align: center;
+  color: var(--text);
+  background: rgba(13, 14, 17, 0.72);
+  border-radius: 0 0 6px 6px;
+  pointer-events: none;
+}
+
+.v2-empty { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; background: #0f1115; }
+.v2-empty p { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+.v2-empty pre {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.v2-footer code { overflow-wrap: anywhere; }
