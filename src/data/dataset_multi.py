@@ -31,7 +31,19 @@ The scalar list, its ranges, the photo names and the pigment names all come
 from the folder's meta.json, so the loader can't silently disagree with the
 generator.
 
-QUICK TEST:
+HDR PHOTOS (hdr=True; off by default)
+The PNG photos are 8-bit, through Blender's AgX tone curve, which squeezes or
+clips the clear coat's highlight. A folder rendered with
+generate_dataset_v5.py --hdr also has every photo as <name>_XXXXXX.exr:
+linear radiance x, highlights above 1 kept. hdr=True reads those instead
+and feeds them in log space, as Kaltheuner et al. 2021 do:
+    I = (log(x + 0.01) - log(0.01)) / (log(1.01) - log(0.01))   per channel
+x = 0 -> 0 and x = 1 -> 1, like the PNGs' range, but a highlight 10x brighter
+than 1 is ~1.5 and 100x is ~2.0 - compressed, not clipped. The maps and
+parameters don't change. Needs the OpenEXR package (pip install OpenEXR),
+imported only when hdr=True.
+
+QUICK TEST (also checks the EXR photos when the folder has them):
     python src/data/dataset_multi.py --root data/blender_gen/dataset_v5
 """
 
@@ -54,6 +66,48 @@ MAP_FILES = ["basecolor", "roughness", "metallic", "normal"]
 
 # Which scalar is ignored when, as (key, the key that switches it off).
 MASK_RULES = [("flake_scale", "flake_strength"), ("film_ior", "film_thickness")]
+
+# Log encoding of HDR photos (Kaltheuner et al. 2021): 0 -> 0, 1 -> 1.
+HDR_EPS = 0.01
+HDR_HALF_MAX = 65504.0   # largest half float: where an overflowed (inf) pixel goes
+
+
+def hdr_log_encode(x: np.ndarray) -> np.ndarray:
+    """Linear radiance -> (log(x + 0.01) - log 0.01) / (log 1.01 - log 0.01).
+    Negative values (a denoiser can undershoot a little) count as 0, and a
+    non-finite pixel is replaced, so one bad pixel can't make the loss NaN."""
+    x = np.nan_to_num(np.asarray(x, dtype=np.float32), nan=0.0,
+                      posinf=HDR_HALF_MAX, neginf=0.0)
+    x = np.maximum(x, 0.0)
+    # log(x + e) - log(e) = log1p(x / e): the same formula, but exactly 0 at
+    # x = 0 in float32 (the difference of two logs leaves a ~1e-8 residue).
+    return (np.log1p(x / HDR_EPS) / np.log1p(1.0 / HDR_EPS)).astype(np.float32)
+
+
+def _openexr():
+    """The OpenEXR module, imported only when HDR photos are used."""
+    try:
+        import OpenEXR
+    except ImportError as e:
+        raise ImportError("Reading HDR photos (.exr) needs the OpenEXR package: "
+                          "pip install OpenEXR") from e
+    return OpenEXR
+
+
+def load_exr(path: str) -> np.ndarray:
+    """Load an RGB OpenEXR as float32 linear values, shape (H, W, 3)."""
+    with _openexr().File(path, separate_channels=True) as f:
+        channels = {name: ch.pixels for name, ch in f.channels().items()}
+
+    def channel(c):
+        if c in channels:
+            return channels[c]
+        # e.g. "Combined.R", if a file was ever saved with layer names
+        hits = [n for n in channels if n.endswith("." + c)]
+        if len(hits) != 1:
+            raise RuntimeError(f"{path}: no single {c} channel among {sorted(channels)}")
+        return channels[hits[0]]
+    return np.stack([channel(c) for c in "RGB"], axis=-1).astype(np.float32)
 
 
 def read_meta(root: str) -> dict:
@@ -82,6 +136,7 @@ def describe(root: str) -> dict:
         "scalar_ranges": ranges,
         "photos": meta.get("photos", ["photo"]),
         "pigments": list(meta.get("pigments", {})),
+        "hdr": bool(meta.get("hdr_photos")),   # written by generate_dataset_v5.py --hdr
     }
 
 
@@ -110,12 +165,24 @@ class MultiLightDataset(Dataset):
         split: "train", "val" (last val_fraction of samples) or "all".
         photos: which photo names to load (default: all the folder has).
         limit: use only the first N samples.
+        hdr: read the photos from the .exr files, log-encoded (see HDR PHOTOS
+             above). The folder must have been rendered with --hdr.
     """
 
     def __init__(self, root: str, split: str = "train", val_fraction: float = 0.1,
-                 photos: list[str] | None = None, limit: int | None = None):
+                 photos: list[str] | None = None, limit: int | None = None,
+                 hdr: bool = False):
         self.root = root
+        self.hdr = hdr
         info = describe(root)
+        if hdr:
+            if not info["hdr"]:
+                raise RuntimeError(
+                    f"HDR photos were asked for (hdr=True: train_multi.py --hdr-input, "
+                    f"or eval_multi.py on a run trained with it), but {root} has none: "
+                    f"its meta.json has no 'hdr_photos' entry. Render a new folder "
+                    f"with generate_dataset_v5.py --hdr.")
+            _openexr()   # fail now, with the install hint, not in the first batch
         self.version = info["version"]
         self.scalar_keys = info["scalar_keys"]
         self.scalar_ranges = info["scalar_ranges"]
@@ -150,13 +217,15 @@ class MultiLightDataset(Dataset):
     def _discover(self) -> list[int]:
         """Complete samples only: a half-written last sample is skipped."""
         found = []
+        # The files __getitem__ reads: the photos as .exr with hdr, else .png.
+        photo_ext = ".exr" if self.hdr else ".png"
         for name in sorted(os.listdir(self.root)):
             if not (name.startswith("params_") and name.endswith(".json")):
                 continue
             tag = name[len("params_"):-len(".json")]
-            needed = self.photo_names + MAP_FILES
-            if all(os.path.exists(os.path.join(self.root, f"{n}_{tag}.png"))
-                   for n in needed):
+            needed = ([f"{n}_{tag}{photo_ext}" for n in self.photo_names]
+                      + [f"{n}_{tag}.png" for n in MAP_FILES])
+            if all(os.path.exists(os.path.join(self.root, f)) for f in needed):
                 found.append(int(tag))
         return found
 
@@ -180,9 +249,15 @@ class MultiLightDataset(Dataset):
     def _png(self, name: str, index: int) -> np.ndarray:
         return load_png(os.path.join(self.root, f"{name}_{index:06d}.png"))
 
+    def _photo(self, name: str, index: int) -> np.ndarray:
+        if self.hdr:
+            return hdr_log_encode(
+                load_exr(os.path.join(self.root, f"{name}_{index:06d}.exr")))
+        return self._png(name, index)
+
     def __getitem__(self, i: int) -> dict:
         index = self.indices[i]
-        photos = np.stack([self._png(n, index) for n in self.photo_names])
+        photos = np.stack([self._photo(n, index) for n in self.photo_names])
         basecolor = srgb_to_linear(self._png("basecolor", index))
         rough = self._png("roughness", index)[..., :1]
         metal = self._png("metallic", index)[..., :1]
@@ -256,7 +331,69 @@ def self_test(root: str) -> bool:
     print(f"\none batch: photos {tuple(batch['photos'].shape)}, maps "
           f"{tuple(batch['maps'].shape)}, scalars {tuple(batch['scalars'].shape)}, "
           f"pigment {batch['pigment'].tolist()}")
+    if describe(root)["hdr"]:
+        ok = hdr_check(root) and ok
     print("\nRESULT:", "dataset looks correct." if ok else "MISMATCH - do not train on this.")
+    return ok
+
+
+def _corr(a: np.ndarray, b: np.ndarray) -> float:
+    a, b = a.ravel() - a.mean(), b.ravel() - b.mean()
+    return float((a * b).sum() / max(np.sqrt((a * a).sum() * (b * b).sum()), 1e-12))
+
+
+def hdr_check(root: str, n_samples: int = 4) -> bool:
+    """For a folder rendered with --hdr: how bright the EXR photos get, and
+    whether each EXR is the same picture as its PNG (same render, so their
+    brightness patterns must match pixel for pixel)."""
+    print("\nHDR photos (.exr, read with hdr=True):")
+    try:
+        ds = MultiLightDataset(root, split="all", hdr=True)
+    except ImportError as e:
+        print(f"  NOT CHECKED: {e}")
+        return True
+    except RuntimeError as e:          # e.g. meta.json says HDR but no .exr files
+        print(f"  {e}  MISMATCH")
+        return False
+    n_png = len(MultiLightDataset(root, split="all"))
+    if len(ds) != n_png:
+        print(f"  WARNING: {n_png} samples are complete as PNGs but {len(ds)} with "
+              f"EXRs - some .exr files are missing")
+    ok = True
+    peak = 0.0
+    for index in ds.indices[:n_samples]:
+        lin = np.stack([load_exr(os.path.join(root, f"{n}_{index:06d}.exr"))
+                        for n in ds.photo_names])                  # (K, H, W, 3)
+        png = np.stack([ds._png(n, index) for n in ds.photo_names])
+        if lin.shape != png.shape:
+            print(f"  {index:06d} EXR photos {lin.shape} but PNGs {png.shape}  MISMATCH")
+            ok = False
+            continue
+        if not np.isfinite(lin).all():
+            print(f"  {index:06d} has NaN/inf pixels (hdr_log_encode replaces them)")
+        enc = hdr_log_encode(lin)
+        # Same render: the log-encoded EXR and the tone-mapped PNG both rise
+        # with brightness, so they must correlate strongly. The same with the
+        # PNG shifted 2 pixels is shown for comparison: lower if they line up.
+        y_enc, y_png = enc.mean(-1), png.mean(-1)
+        r = _corr(y_enc, y_png)
+        r_shift = _corr(y_enc, np.roll(y_png, 2, axis=-1))
+        peak = max(peak, float(np.nanmax(lin)))
+        print(f"  {index:06d} linear max {np.nanmax(lin):7.2f}, above 1: "
+              f"{100 * (lin.max(-1) > 1).mean():5.2f}% of pixels | encoded "
+              f"{enc.min():.3f}..{enc.max():.3f} | EXR vs PNG r = {r:.3f} "
+              f"(shifted 2 px: {r_shift:.3f})")
+        if r < 0.5:
+            ok = False
+            print(f"  {index:06d} EXR and PNG don't look like the same picture  MISMATCH")
+    if peak <= 1.0:
+        print("  WARNING: no pixel above 1 in these samples. A gloss paint's flash "
+              "hotspot should be; were the EXRs written through the view transform? "
+              "(see save_last_render_exr in generate_dataset_v5.py)")
+    from torch.utils.data import DataLoader
+    batch = next(iter(DataLoader(ds, batch_size=min(2, len(ds)))))
+    print(f"  one HDR batch: photos {tuple(batch['photos'].shape)}, "
+          f"{batch['photos'].min().item():.3f}..{batch['photos'].max().item():.3f}")
     return ok
 
 

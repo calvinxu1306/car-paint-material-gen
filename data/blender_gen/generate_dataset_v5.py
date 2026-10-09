@@ -42,6 +42,20 @@ The ground-truth maps and their encodings are unchanged from v3/v4, and the
 flash photo keeps v4's name (photo_XXXXXX.png), so the v1 loader and model can
 train on v5's flash photos alone - that's the single-flash baseline.
 
+HDR PHOTOS (--hdr, off by default)
+The PNG photos are 8-bit and go through Blender's AgX tone curve, which
+squeezes or clips the brightest part of the picture - the clear coat's
+highlight, whose height is most of what coat_weight changes. With --hdr
+every photo (flash and side) is ALSO saved as <name>_XXXXXX.exr: the same
+render (no second render), before the tone curve, as linear half-float
+OpenEXR, so highlights keep their real brightness above 1. Kaltheuner et al.
+2021 feed their network HDR photos like this, in log space; dataset_multi.py
+(hdr=True) and train_multi.py (--hdr-input) read them that way. meta.json
+gets an "hdr_photos" entry, so a folder is either all-HDR or not HDR at all:
+resuming a folder with a different --hdr setting is refused. Disk: an EXR is
+roughly 0.2-0.35 MB (estimated on synthetic 256 px images, not a render),
+so about 5-8 GB on top of the PNGs for 4000 samples.
+
 RUN (from data/blender_gen):
     blender -b -P generate_dataset_v5.py -- --count 4 --out dataset_v5
 then look at the photos, and for the full set:
@@ -49,6 +63,15 @@ then look at the photos, and for the full set:
     blender -b -P generate_dataset_v5.py -- --start 100000 --count 400 --out dataset_v5_test
 The test set starts at 100000 so its random seeds can never overlap the
 training set's, even if the training set grows later.
+
+With HDR photos, in NEW folders. --hdr has not been run in Blender yet, so
+check the first 4 samples before the rest (python src/data/dataset_multi.py
+--root data/blender_gen/dataset_v5_hdr reports the EXR range and whether
+each EXR lines up with its PNG):
+    blender -b -P generate_dataset_v5.py -- --count 4 --out dataset_v5_hdr --hdr
+    blender -b -P generate_dataset_v5.py -- --count 4000 --out dataset_v5_hdr --hdr
+    blender -b -P generate_dataset_v5.py -- --start 100000 --count 400 --out dataset_v5_hdr_test --hdr
+Same seeds, so the same paints and lights as dataset_v5.
 
 Quick smoke test with fewer render samples (noisier, ~4x faster):
     blender -b -P generate_dataset_v5.py -- --count 4 --out v5_smoke --samples 16
@@ -162,6 +185,8 @@ def parse_args():
     ap.add_argument("--samples", type=int, default=PHOTO_SAMPLES,
                     help="render samples per photo (lower = faster, noisier)")
     ap.add_argument("--side-lights", type=int, default=N_SIDE_LIGHTS)
+    ap.add_argument("--hdr", action="store_true",
+                    help="also save every photo as linear half-float .exr")
     return ap.parse_args(argv)
 
 
@@ -515,13 +540,48 @@ def render_to(path):
     bpy.ops.render.render(write_still=True)
 
 
+def save_last_render_exr(path):
+    """Save the render that render_to() just wrote as a PNG a second time, as
+    OpenEXR: RGB, half float, ZIP (lossless). No second render - it is the
+    same Render Result, so the EXR and the PNG line up pixel for pixel.
+
+    ASSUMPTION, not yet checked in Blender - verify on first use: Blender
+    writes float formats like OpenEXR scene-linear, WITHOUT the view transform
+    (AgX) - that only shapes display formats like the 8-bit PNG. So the EXR
+    holds the radiance the PNG's tone curve was applied to: the same picture,
+    with highlights above 1 instead of squeezed or clipped. dataset_multi.py's
+    self-test reports the EXRs' brightest value; if no photo goes above 1, the
+    view transform was probably applied after all."""
+    scene = bpy.context.scene
+    im = scene.render.image_settings
+    png_format, png_mode, png_depth = im.file_format, im.color_mode, im.color_depth
+    old_codec = im.exr_codec
+    try:
+        im.file_format = "OPEN_EXR"
+        im.color_mode = "RGB"
+        im.color_depth = "16"       # half float
+        im.exr_codec = "ZIP"        # lossless
+        bpy.data.images["Render Result"].save_render(filepath=path, scene=scene)
+    finally:
+        # The order matters. The codec goes back while the format is still
+        # half-float EXR (every codec is valid there). The depth goes back
+        # AFTER the format: "8" is not an EXR depth, and PNG also accepts
+        # "16", so the other way round would fail or leave every later PNG
+        # (photos AND ground-truth maps) 16-bit.
+        im.exr_codec = old_codec
+        im.file_format = png_format
+        im.color_mode = png_mode
+        im.color_depth = png_depth
+
+
 def place_light(light_obj, light):
     light_obj.location = (light["x"], light["y"], light["z"])
     light_obj.data.energy = light["energy"]
 
 
-def render_photos(plane, light_obj, p, lights, path_for, samples):
-    """One photo per light, same camera, same paint."""
+def render_photos(plane, light_obj, p, lights, path_for, samples, exr_path_for=None):
+    """One photo per light, same camera, same paint. With exr_path_for (--hdr),
+    each photo is also saved as a linear EXR from the same render."""
     scene = bpy.context.scene
     scene.cycles.samples = samples
     scene.cycles.use_denoising = True
@@ -532,6 +592,8 @@ def render_photos(plane, light_obj, p, lights, path_for, samples):
     for light in lights:
         place_light(light_obj, light)
         render_to(path_for(light["name"]))
+        if exr_path_for is not None:
+            save_last_render_exr(exr_path_for(light["name"]))
 
 
 def render_maps(plane, light_obj, p, path_for):
@@ -569,35 +631,52 @@ def photo_names(n_side):
     return ["photo"] + [f"side{k}" for k in range(1, n_side + 1)]
 
 
-def render_sample(index, out_dir, plane, light_obj, n_side, samples):
+def render_sample(index, out_dir, plane, light_obj, n_side, samples, hdr=False):
     rng = random.Random(index)
     p = sample_paint_params(rng)
     lights = sample_lights(rng, n_side)   # drawn after the paint
     tag = f"{index:06d}"
     path_for = lambda name: os.path.join(out_dir, f"{name}_{tag}.png")
+    exr_path_for = ((lambda name: os.path.join(out_dir, f"{name}_{tag}.exr"))
+                    if hdr else None)
 
-    render_photos(plane, light_obj, p, lights, path_for, samples)
+    render_photos(plane, light_obj, p, lights, path_for, samples, exr_path_for)
     render_maps(plane, light_obj, p, path_for)
 
+    # Written last: its presence marks the sample complete (see already_done).
     with open(os.path.join(out_dir, f"params_{tag}.json"), "w") as f:
         json.dump({"index": index, "seed": index, "version": DATASET_VERSION,
                    **p, "lights": lights}, f, indent=2)
     return p
 
 
-def already_done(index, out_dir, n_side):
+def already_done(index, out_dir, n_side, hdr=False):
     tag = f"{index:06d}"
     names = photo_names(n_side) + MAP_NAMES
+    exrs = photo_names(n_side) if hdr else []
     return (all(os.path.exists(os.path.join(out_dir, f"{n}_{tag}.png"))
                 for n in names)
+            and all(os.path.exists(os.path.join(out_dir, f"{n}_{tag}.exr"))
+                    for n in exrs)
             and os.path.exists(os.path.join(out_dir, f"params_{tag}.json")))
 
 
 PHOTO_DITHER = 1.0   # Blender's default; hides 8-bit banding like camera noise
 MAP_DITHER = 0.0     # ground truth stores exact values (see render_maps)
 
+# meta.json entry written ONLY with --hdr. Its presence is what tells the
+# loader (dataset_multi.py, hdr=True) that the folder has EXR photos, and the
+# settings check in write_meta() refuses to resume a folder with a different
+# --hdr setting, so a folder never mixes samples with and without them.
+HDR_PHOTOS_META = {
+    "files": "<photo>_XXXXXX.exr beside every <photo>_XXXXXX.png",
+    "format": "OpenEXR, RGB, half float, ZIP (lossless)",
+    "values": "scene-linear radiance from the same render as the PNG, "
+              "before the AgX view transform (not clipped at 1)",
+}
 
-def write_meta(out_dir, n_side, samples, res):
+
+def write_meta(out_dir, n_side, samples, res, hdr=False):
     """Record exactly how this dataset was generated. The loaders read the
     ranges and photo names from here, so the code can't desync from the data."""
     meta = {
@@ -627,6 +706,8 @@ def write_meta(out_dir, n_side, samples, res):
                                % (SIDE_BRIGHTNESS_JITTER,),
         },
     }
+    if hdr:   # only then: a folder without HDR keeps exactly its old meta.json
+        meta["hdr_photos"] = HDR_PHOTOS_META
     path = os.path.join(out_dir, "meta.json")
     if os.path.exists(path):
         with open(path) as f:
@@ -658,18 +739,21 @@ def main():
     clear_scene()
     plane, light_obj = setup_scene()
     setup_render(args.res, args.cpu)
-    write_meta(out_dir, args.side_lights, args.samples, args.res)
+    write_meta(out_dir, args.side_lights, args.samples, args.res, args.hdr)
 
     indices = list(range(args.start, args.start + args.count))
-    todo = [i for i in indices if not already_done(i, out_dir, args.side_lights)]
+    todo = [i for i in indices
+            if not already_done(i, out_dir, args.side_lights, args.hdr)]
     print(f"[batch] output: {out_dir}")
     print(f"[batch] {len(todo)} to render, {len(indices) - len(todo)} already done "
-          f"| {1 + args.side_lights} photos per sample at {args.samples} samples")
+          f"| {1 + args.side_lights} photos per sample at {args.samples} samples"
+          + (" | + linear .exr of every photo (--hdr)" if args.hdr else ""))
 
     t0 = time.time()
     counts = {}
     for n, i in enumerate(todo, start=1):
-        p = render_sample(i, out_dir, plane, light_obj, args.side_lights, args.samples)
+        p = render_sample(i, out_dir, plane, light_obj, args.side_lights, args.samples,
+                          args.hdr)
         counts[p["pigment"]] = counts.get(p["pigment"], 0) + 1
         el = time.time() - t0
         per = el / n
@@ -687,6 +771,11 @@ def main():
     print("               should change colour between side photos")
     print("  basecolor_*  for candy paint this is the SILVER base; the colour is")
     print("               in coat_tint_* in the params file")
+    if args.hdr:
+        print("  *.exr        (--hdr) the same pictures, linear: a gloss paint's flash")
+        print("               hotspot should go well above 1. Check with")
+        print("               python src/data/dataset_multi.py --root <this folder>")
+        print("               (it reports the EXR range and that EXR and PNG line up)")
 
 
 if __name__ == "__main__":

@@ -39,6 +39,15 @@ MODEL OPTIONS (off by default; see MultiLightPaintNet in model.py)
     --flash-slot   the flash photo gets its own slot next to the max/mean
                    pooling; needs --photos flash+random, all or flash
 
+HDR INPUT (--hdr-input, off by default)
+    Reads the photos from the .exr files of a folder rendered with
+    generate_dataset_v5.py --hdr, in log space (HDR PHOTOS in dataset_multi.py):
+    the coat highlight keeps its height instead of being squeezed by the PNGs'
+    tone curve. Needs pip install OpenEXR. Recorded in config.json, so
+    eval_multi.py reads the photos the same way.
+    python src/train_multi.py --root data/blender_gen/dataset_v5_hdr --out runs/v5_hdr --photos flash+random --hdr-input
+    Compare with the same command without --hdr-input (same folder, PNG photos).
+
 FIRST: the overfit test (should drive the loss towards 0)
     python src/train_multi.py --root data/blender_gen/dataset_v5 \
         --out runs/v5_overfit --overfit 4 --epochs 200 --schedule constant
@@ -239,6 +248,9 @@ def main():
                     help="pixel coordinates as two extra input channels")
     ap.add_argument("--flash-slot", action="store_true",
                     help="give the flash photo its own slot in the pooling")
+    ap.add_argument("--hdr-input", action="store_true",
+                    help="photos from the folder's .exr files (rendered with "
+                         "--hdr), log-encoded; needs pip install OpenEXR")
     ap.add_argument("--max-photos", type=int, default=None,
                     help="most photos per sample (default: all the dataset has)")
     ap.add_argument("--limit", type=int, default=None)
@@ -273,13 +285,16 @@ def main():
 
     from torch.utils.data import DataLoader
     if args.overfit:
-        train_ds = MultiLightDataset(args.root, split="all", limit=args.overfit)
+        train_ds = MultiLightDataset(args.root, split="all", limit=args.overfit,
+                                     hdr=args.hdr_input)
         val_ds = train_ds
         bs = min(args.batch_size, len(train_ds))
         print(f"OVERFIT MODE: {len(train_ds)} samples, expecting the loss to approach 0")
     else:
-        train_ds = MultiLightDataset(args.root, split="train", limit=args.limit)
-        val_ds = MultiLightDataset(args.root, split="val", limit=args.limit)
+        train_ds = MultiLightDataset(args.root, split="train", limit=args.limit,
+                                     hdr=args.hdr_input)
+        val_ds = MultiLightDataset(args.root, split="val", limit=args.limit,
+                                   hdr=args.hdr_input)
         bs = args.batch_size
     train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True,
                               num_workers=args.workers,
@@ -289,7 +304,8 @@ def main():
     n_photos = len(train_ds.photo_names)
     args.max_photos = min(args.max_photos or n_photos, n_photos)
     print(f"train {len(train_ds)} / val {len(val_ds)} samples, "
-          f"{len(train_ds.photo_names)} photos each, {len(keys)} layer parameters")
+          f"{len(train_ds.photo_names)} photos each, {len(keys)} layer parameters"
+          + (" | HDR photos (.exr, log-encoded)" if args.hdr_input else ""))
 
     meta_path = os.path.join(args.root, "meta.json")
     model_cfg = dict(n_scalars=len(keys), n_pigments=max(len(train_ds.pigments), 1),
