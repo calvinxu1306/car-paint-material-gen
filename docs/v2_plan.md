@@ -220,7 +220,8 @@ cosine schedule shrinks the learning rate too fast to judge.
 
 Defaults: 4 samples per batch, each with 1–6 of its photos (all six
 available), so up to 24 images per step, about 3× v1's memory. Out of GPU
-memory → add `--amp` first, then `--batch-size 2`. Expect roughly 2–3× v1's
+memory → `--batch-size 2` (not `--amp`: Run 12's first attempt with it
+turned to NaN in epoch 2, see `ablations.md`). Expect roughly 2–3× v1's
 time per epoch.
 
 ### Phase 4 — evaluate
