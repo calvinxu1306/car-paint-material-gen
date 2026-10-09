@@ -492,6 +492,46 @@ point to the capture, not the training, for those.
   (Kaltheuner et al. 2021); fixed side-light slots instead of five random
   lights (same paper); one photo reflecting stripes, for `peel_strength`
   (how industry measures orange peel).
+  - **HDR: implemented, not yet run.** `generate_dataset_v5.py --hdr` also
+    saves every photo (flash and side) as `<name>_XXXXXX.exr`: the same
+    render, linear, half float, before the AgX tone curve, so the coat
+    highlight keeps its height above 1. `train_multi.py --hdr-input` reads
+    those instead of the PNGs, log-encoded as in the paper
+    (`dataset_multi.py`, HDR PHOTOS); `eval_multi.py` follows the run's
+    `config.json`. New folders (a folder rendered without `--hdr` refuses
+    it), roughly 5–8 GB more for 4000 samples (estimated). Render 4 samples
+    and check them before the rest:
+    ```
+    pip install OpenEXR
+    cd data\blender_gen
+    & "...blender.exe" -b -P generate_dataset_v5.py -- --count 4 --out dataset_v5_hdr --hdr
+    cd ..\..
+    python src/data/dataset_multi.py --root data/blender_gen/dataset_v5_hdr
+    cd data\blender_gen
+    & "...blender.exe" -b -P generate_dataset_v5.py -- --count 4000 --out dataset_v5_hdr --hdr
+    & "...blender.exe" -b -P generate_dataset_v5.py -- --start 100000 --count 400 --out dataset_v5_hdr_test --hdr
+    cd ..\..
+    python src/train_multi.py --root data/blender_gen/dataset_v5_hdr --out runs/v5_hdr --photos flash+random --hdr-input
+    python src/eval_multi.py --run runs/v5_hdr --test-root data/blender_gen/dataset_v5_hdr_test
+    ```
+    Compare with the same `train_multi.py` command without `--hdr-input`
+    (same folder, PNG photos; or Run 12, whose `dataset_v5` has the same
+    seeds, so the same paints and lights). Prediction: `coat_weight` gains
+    most, since what it changes is mostly the highlight's height, which the
+    PNGs squeeze or clip. **The Blender part is untested** (written and
+    checked without Blender, on mock data): in particular the assumption
+    that Blender writes EXR scene-linear, without the view transform. The
+    `dataset_multi.py` check reports how far the EXR photos go above 1 (a
+    gloss paint's flash hotspot should) and whether each EXR lines up with
+    its PNG; if nothing goes above 1 (it then says MISMATCH), stop and look
+    at `save_last_render_exr`. **Real paint:** an `--hdr-input` model needs
+    linear HDR photos at the renders' brightness scale, which ordinary
+    phone photos are not (8-bit, through the phone's tone curve,
+    auto-exposed; and the log encoding is not exposure-invariant). If HDR
+    input wins, the Phase 5 capture (`v2_plan.md` §6) must change to RAW
+    or bracketed-exposure HDR photos, calibrated to the renders' exposure,
+    before such a model is used on real paint; until then real phone
+    photos only fit a run trained on the PNGs.
 - **Held-out test sets** (highest priority for the report): 300 fresh samples
   per lighting condition at indices 2000+, scored with `--test-root`, so the
   reported numbers come from samples never used for training *or* for
