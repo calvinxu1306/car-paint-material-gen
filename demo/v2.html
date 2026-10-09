@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Car Paint from Several Photos</title>
+  <meta name="description" content="A neural network reads a flash photo and side-lit photos of car paint (solid, metallic, pearl, colour-shift or candy) and recovers its layers, including clear-coat tint and thin film. Samples rendered live in three.js.">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <main class="layout">
+    <section class="stage" aria-label="3D preview">
+      <canvas id="view"></canvas>
+      <div class="stage-bar">
+        <label class="check"><input type="checkbox" id="spin" checked> Rotate</label>
+      </div>
+      <p class="status" id="status" role="status"></p>
+    </section>
+
+    <aside class="panel">
+      <header>
+        <h1>Car paint from several photos</h1>
+        <p class="lede">A network looks at photos of one paint swatch, taken by a camera that stays put while the light moves: the phone's flash, then lights from the side. It estimates every layer: the base coat, metallic flakes, the clear coat and its tint (candy paint), and the thin film that makes pearl and colour-shift paint change colour with angle.<span id="held-out"></span></p>
+      </header>
+
+      <div class="block v2-empty" id="empty" hidden>
+        <h2>No samples to show yet</h2>
+        <p id="empty-why">This viewer reads <code>assets/samples_v2/manifest.json</code>, which has not been exported.</p>
+        <p>Export a v2 run (from <code>train_multi.py</code>) from the repository root:</p>
+        <pre><code>python src/export_demo_multi.py --run runs/v5_multi</code></pre>
+        <p>It writes <code>demo/assets/samples_v2/</code>. Then reload this page. Meanwhile the sphere shows a plain grey paint.</p>
+      </div>
+
+      <div id="content" hidden>
+        <div class="block">
+          <h2>Input photos</h2>
+          <div class="v2-photos" id="photos"></div>
+          <p class="note" id="photos-note"></p>
+        </div>
+
+        <div class="block">
+          <div class="block-head">
+            <h2>Material shown</h2>
+            <div class="seg" role="group" aria-label="Material source">
+              <button type="button" data-mode="pred" class="on">Predicted</button>
+              <button type="button" data-mode="gt">Ground truth</button>
+            </div>
+          </div>
+          <div class="v2-maps" aria-label="Texture maps in use">
+            <figure><img id="map-basecolor" alt="Base colour map"><figcaption>Base colour</figcaption></figure>
+            <figure><img id="map-rough" alt="Roughness map"><figcaption>Roughness</figcaption></figure>
+            <figure><img id="map-normal" alt="Flake normal map"><figcaption>Flake normals</figcaption></figure>
+          </div>
+        </div>
+
+        <div class="block" id="type-block">
+          <h2>Paint type</h2>
+          <p class="v2-type" id="type-line"></p>
+          <div class="v2-probs" id="probs" aria-label="Predicted probability of each paint type"></div>
+        </div>
+
+        <div class="block">
+          <h2>Layer parameters</h2>
+          <table class="params" aria-label="Layer parameters">
+            <thead><tr><th>Parameter</th><th>Predicted</th><th>True</th></tr></thead>
+            <tbody id="param-rows"></tbody>
+          </table>
+          <table class="params v2-colours" aria-label="Colours and map averages">
+            <thead><tr><th>Colour and map average</th><th>Predicted</th><th>True</th></tr></thead>
+            <tbody id="base-rows"></tbody>
+          </table>
+          <p class="note">n/a: the parameter means nothing for this paint (flake size of a solid paint, film IOR without a film), so it was neither trained nor scored.</p>
+          <p class="note">How the sphere approximates Blender: the thin film uses three.js's iridescence (film IOR, one thickness), and a predicted film thinner than 50 nm is drawn as no film. three.js works out the film's colour from the viewing angle alone (Blender from the angle between light and viewer), so the colours are close to Blender's, not exact. three.js has no clear-coat tint, so a candy coat is drawn by multiplying the base colour by 1 − w + w × tint (w = clear-coat weight), which is what Blender does at normal incidence; Blender also deepens the tint where you look at the coat at a grazing angle (the sphere's rim), and this doesn't. Orange peel is not drawn.</p>
+        </div>
+      </div>
+
+      <div class="block">
+        <h2>Light</h2>
+        <label class="slider">
+          <span class="v2-slider-head">Elevation <output id="elev-val" for="elev"></output></span>
+          <input type="range" id="elev" min="5" max="90" step="1" value="35">
+        </label>
+        <label class="slider">
+          <span class="v2-slider-head">Azimuth <output id="azim-val" for="azim"></output></span>
+          <input type="range" id="azim" min="0" max="355" step="5" value="45">
+        </label>
+        <div class="v2-light-row">
+          <div class="seg" role="group" aria-label="Surroundings">
+            <button type="button" data-env="room" class="on">Dim room</button>
+            <button type="button" data-env="none">Light only</button>
+          </div>
+          <button type="button" class="v2-btn" id="flash-btn">Light at the camera</button>
+        </div>
+        <p class="note">One light, placed relative to your view and measured like the lights of the training photos: elevation is the angle above the surface facing you, so 90° puts it at the camera like the phone's flash (the side lights were 20–65°); azimuth goes round the view, 0° from the right, 90° from the top. The middle of the sphere faces you as the swatch faced the camera. Lower the light to see pearl and colour-shift paints change colour. "Light only" is the dark room of the training photos, where the clear coat has nothing but the light to reflect.</p>
+      </div>
+
+      <div class="block" id="samples-block" hidden>
+        <h2>Samples</h2>
+        <div class="grid v2-gallery" id="samples" role="listbox" aria-label="Samples"></div>
+      </div>
+
+      <div class="block" id="repeat-block" hidden>
+        <label class="slider">
+          <span>Flake size on object</span>
+          <input type="range" id="repeat" min="1" max="16" step="1" value="6">
+        </label>
+      </div>
+
+      <footer id="footer" class="v2-footer"></footer>
+    </aside>
+  </main>
+  <script>
+    // Browsers refuse to run module scripts from a double-clicked file, so the
+    // viewer can't report this itself. Say it here, in plain words.
+    if (location.protocol === 'file:') {
+      document.getElementById('status').textContent =
+        'This page needs a web server. In a terminal inside the demo folder run ' +
+        '"python -m http.server 8000", then open http://localhost:8000/v2.html';
+    }
+  </script>
+  <script type="module" src="v2.js"></script>
+</body>
+</html>
