@@ -125,8 +125,11 @@ def samples_to_export(cfg: dict, root: str, test_root: str | None):
     """The dataset to export from, its folder, a description for the page, and
     the indices in it that the run may have learned from (None: can't tell).
     Without --test-root: the validation split, as eval_multi.py builds it."""
+    # A run trained on HDR photos (train_multi.py --hdr-input) must be fed them
+    # here too, or it would be scored on the 8-bit PNGs it never saw.
+    hdr = bool(cfg["args"].get("hdr_input", False))
     if test_root:
-        ds = MultiLightDataset(test_root, split="all")
+        ds = MultiLightDataset(test_root, split="all", hdr=hdr)
         folder, where = test_root, "held-out test set"
         # As eval_multi.py: the same index in the training folder is the same
         # seed, so the same paint. Catches a --test-root that IS the training
@@ -141,7 +144,7 @@ def samples_to_export(cfg: dict, root: str, test_root: str | None):
             where = "test set (not checked against the training data)"
     else:
         overfit = cfg["args"].get("overfit")
-        ds = MultiLightDataset(root, split="val")
+        ds = MultiLightDataset(root, split="val", hdr=hdr)
         # The samples train_multi.py actually validated on, even if the folder
         # has grown since (the split is "last 10%", which would move).
         saved = cfg.get("val_indices")
@@ -278,8 +281,11 @@ def main():
             folder_out = os.path.join(args.out, tag)
             os.makedirs(folder_out)
             for name, img in zip(ds.photo_names, photos):
-                save_rgb(img.numpy().transpose(1, 2, 0),
-                         os.path.join(folder_out, f"{name}.png"))
+                dst = os.path.join(folder_out, f"{name}.png")
+                if ds.hdr:   # the tensor is log-encoded radiance: show the photo itself
+                    shutil.copyfile(os.path.join(ds.root, f"{name}_{tag}.png"), dst)
+                else:
+                    save_rgb(img.numpy().transpose(1, 2, 0), dst)
             for prefix, maps in (("pred", pred_maps), ("gt", gt_maps)):
                 for name, img in maps_to_textures(maps).items():
                     save_rgb(img, os.path.join(folder_out, f"{prefix}_{name}.png"))
