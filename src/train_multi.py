@@ -27,6 +27,11 @@ WHICH PHOTOS THE NETWORK SEES (--photos)
             would be an untested condition).
     flash   only the flash photo - v1's input, with v2's network: the
             single-flash baseline for the v2 comparison
+    flash+random
+            the flash photo every time, plus k-1 side photos chosen at
+            random (k ~ uniform{1..--max-photos}, the same spread as random).
+            A real capture always includes the flash photo; random leaves it
+            out of ~42% of samples. Run 12 in ablations.md compares the two.
     all     the first --max-photos photos (flash first), every time
 
 FIRST: the overfit test (should drive the loss towards 0)
@@ -95,7 +100,13 @@ def choose_photos(photos: torch.Tensor, policy: str, max_photos: int,
     if policy == "all":
         return photos[:, :max_photos]
     k = int(torch.randint(1, min(max_photos, k_all) + 1, (1,), generator=generator))
-    order = torch.argsort(torch.rand(b, k_all, generator=generator), dim=1)[:, :k]
+    if policy == "flash+random":
+        # photos[:, 0] is the flash photo (dataset_multi.py puts it first).
+        sides = torch.argsort(torch.rand(b, k_all - 1, generator=generator),
+                              dim=1)[:, :k - 1] + 1
+        order = torch.cat([torch.zeros(b, 1, dtype=torch.long), sides], dim=1)
+    else:
+        order = torch.argsort(torch.rand(b, k_all, generator=generator), dim=1)[:, :k]
     idx = order.to(photos.device)[:, :, None, None, None].expand(
         -1, -1, *photos.shape[2:])
     return photos.gather(1, idx)
@@ -212,7 +223,8 @@ def main():
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--schedule", choices=["constant", "cosine"], default="cosine")
-    ap.add_argument("--photos", choices=["random", "flash", "all"], default="random")
+    ap.add_argument("--photos", choices=["random", "flash", "flash+random", "all"],
+                    default="random")
     ap.add_argument("--max-photos", type=int, default=None,
                     help="most photos per sample (default: all the dataset has)")
     ap.add_argument("--limit", type=int, default=None)
@@ -286,9 +298,10 @@ def main():
     run_epoch.scaler = (torch.amp.GradScaler("cuda")
                         if args.amp and device.type == "cuda" else None)
 
+    spread = {"random": f" (1-{args.max_photos})",
+              "flash+random": f" (flash + 0-{args.max_photos - 1} side)"}
     print(f"parameters: {count_params(model):,} | lr {args.lr} ({args.schedule}) | "
-          f"photos: {args.photos}" + (f" (1-{args.max_photos})"
-                                      if args.photos == "random" else ""))
+          f"photos: {args.photos}{spread.get(args.photos, '')}")
 
     log_path = os.path.join(args.out, "log.csv")
     with open(log_path, "w", newline="") as f:

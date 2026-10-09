@@ -357,8 +357,125 @@ statistics.
 
 ---
 
+## Runs 10 and 11 — v5 data: one flash photo vs. several lights
+
+The first v2 runs. `dataset_v5` was rendered with the Phase 2 commands in
+`v2_plan.md` (4000 samples, all five paint types, a flash photo plus five
+side-lit photos each). Both runs: 150 epochs, cosine schedule, batch 4, full
+precision, on an RTX 4070. They are identical except for `--photos`:
+
+- **Run 10** (`runs/v5_flash`, `--photos flash`): the flash photo only.
+  ~148 s per epoch. Best epoch not recorded.
+- **Run 11** (`runs/v5_multi`, `--photos random`): a random 1–6 of each
+  sample's photos every batch. ~250 s per epoch. Best epoch 117 (validation
+  loss 0.2489 with all photos).
+
+Both scored on the held-out test set `dataset_v5_test` (400 samples, seeds
+from 100000) with `eval_multi.py`. Run 10 has only a flash row: the evaluation
+also scored it on side-lit photo sets it never trained with, which is
+meaningless (a bug in `eval_multi.py`, now fixed — it took the photo limit
+from `config.json`, where the dataset's photo count is recorded even for a
+flash-only run).
+
+| photos shown | maps | coat wt | coat rgh | tint (RGB) | flk size | flk str | peel | film d | film n | pigment acc. |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **Run 10**, flash | **64.8%** | 3.1% | **62.5%** | 32–34% | **79.3%** | 81.1% | −2.5% | 77.1% | 8.1% | **86%** |
+| Run 11, flash | 54.5% | 2.5% | 16.4% | 31–33% | 45.6% | 40.3% | −3.1% | 45.9% | −3.0% | 69% |
+| Run 11, side1 | 48.9% | 1.7% | 16.6% | 31–33% | 41.9% | 78.9% | −5.0% | 54.8% | −1.6% | 75% |
+| Run 11, flash+side1 | 59.9% | 3.6% | 17.4% | 31–32% | 56.0% | 80.2% | −3.5% | 75.3% | 3.4% | 82% |
+| Run 11, flash+3 sides | 61.3% | 3.5% | 17.8% | 31–32% | 58.3% | 86.3% | −3.5% | 79.1% | 6.4% | 83% |
+| Run 11, all 6 | 61.6% | 3.6% | 17.4% | 31–32% | 60.2% | **86.7%** | −3.5% | 78.7% | 6.4% | 83% |
+
+Pigment accuracy is type accuracy, not skill; always guessing the commonest
+type scores 26%. Real-unit errors, Run 10 (flash) vs. Run 11 (all 6): coat
+roughness 0.045 vs. 0.100 (range 0.08–0.7), flake scale 4.0 vs. 7.6 (75–150),
+flake strength 0.019 vs. 0.014 (0–0.4), film thickness 36 vs. 34 nm (0–700).
+
+**Finding 12 — the multi-light model is not better than a flash-only model.**
+Run 10, shown one flash photo, beats Run 11 shown all six on the maps, coat
+roughness (62.5 vs. 17.4%), flake size (79.3 vs. 60.2%) and paint type (86 vs.
+83%). Run 11 wins only flake strength (86.7 vs. 81.1%) and film thickness
+(78.7 vs. 77.1%, which Finding 13 discounts). Within Run 11 the side lights
+do add a lot (flash → all 6: flake strength 40 → 87%, film thickness 46 →
+79%, paint type 69 → 83%), but mostly because Run 11 reads the flash photo
+far worse than Run 10 does: given the same single flash photo, it scores
+16.4% on coat roughness against 62.5%, and 40.3% on flake strength against
+81.1%. Side photos do carry flake information of their own (side1 alone:
+78.9% on flake strength), consistent with side lights making flakes glint.
+
+**Finding 13 — two overall scores are mostly the paint type.** Film thickness
+scores 78.7% overall, but within each type with a film it is −8.8% (pearl)
+and +5.1% (colour-shift) in Run 11, and −9.1% / +1.4% in Run 10. Pearl and
+colour-shift films are drawn from different ranges (100–400 vs. 250–700 nm),
+so recognising the type earns nearly all of the skill; the thickness itself
+is not being measured. Coat tint scores 31–34% overall in every row of both
+runs, yet −163 to −187% within candy, the only paint with a tint: the network
+correctly predicts "no tint" for the other four types and gets candy's tint
+badly wrong. A silver base under a tinted coat looks much like a coloured
+metallic base, and the confusions show it: candy is called metallic in 17 of
+88 test samples (Run 10) and 29 of 88 (Run 11, all 6), and about a quarter of
+metallic paints are called candy in both runs. The colour presumably ends up
+in the base-colour map instead of the tint. The one tint-related signal that
+does come through is candy's coat weight (36.9% skill within candy in Run 11,
+20.5% in Run 10), which sets how strong the tint looks.
+
+**Finding 14 — the predictions in `v2_plan.md` §4 mostly failed.**
+
+| prediction | outcome |
+|---|---|
+| film_ior ~0% from the flash, clearly > 0 with side lights | 8.1% (Run 10) vs. 6.4% (Run 11, all 6); within type −14 to +11%. Not learned either way. |
+| coat_weight > 0 with side lights | 3.6%. Not confirmed, even with the brightness fix (Audit 3); only candy's is learnable (Finding 13). |
+| peel_strength small gain at most | −3.5%. As predicted (still no environment to reflect). |
+| pearl/colour-shift vs. metallic confusions drop with side lights | Partly: in Run 11, colour-shift is identified in 22 of 54 test samples from the flash and 51 of 54 with all six. But Run 10 already gets 47 of 54 from the flash alone, so the side lights mostly make up for Run 11's weak reading of the flash photo. Candy ↔ metallic stays the main confusion. |
+| flake size / strength, coat roughness "as v1 (70–90%)" | Run 10: yes for flakes (79 / 81%), coat roughness 62.5% (v1: 68%). Run 11: no (Finding 12). |
+
+**Finding 15 (open) — why Run 11 reads the flash photo badly.** Not
+under-training or over-fitting: its best epoch was 117 of 150, and at the end
+train and validation loss were close (0.226 vs. 0.251) and flat. (Run 10 does
+over-fit slightly: 0.158 vs. 0.295, validation loss creeping up over the last
+epochs; `best.pt` keeps its best epoch.) Run 11's coat-roughness validation
+error at the final epoch was 0.170 with all photos and 0.172 with the flash
+alone (normalised),
+against 0.077 for Run 10: it never learned to read coat roughness from any
+input. Two explanations, not yet separated:
+
+- **A: the flash photo was often missing in training.** `--photos random`
+  leaves the flash photo out of ~42% of training samples. A side photo can
+  still show the glossy coat's highlight, but off-centre: simulated with the
+  generator's geometry, 42–47% of side photos have it in frame (a light high
+  above the sample puts the coat's mirror reflection inside the picture), so ~12–14% of Run 11's
+  training samples had no coat highlight in any photo. In the rest without
+  the flash, the highlight's position and shape depend on a light the network
+  is never told about. If learning from those samples is what held Run 11
+  back, always including the flash photo should fix it. The ~12–14% figure
+  is small, which makes A less likely than it first looked.
+- **B: pooling hides which photo is the flash.** The layer-parameter head
+  reads the max and the mean over photos of each photo's global vector, so the
+  flash photo's evidence is mixed with up to five side photos', in
+  proportions that change every batch, and nothing marks which photo is the
+  flash. Giving the flash photo its own slot in the pooled vector would test
+  this.
+
+**Run 12 (next, predictions written before running):** `--photos
+flash+random` — the flash photo in every sample plus a random 0–5 side
+photos. That is the same photo-count spread as Run 11 (1–6 photos), and
+matches a real capture, which always includes the flash photo. Everything
+else as Run 11. If A holds, Run 12's flash row approaches Run 10's: coat
+roughness ≥ 50% (Run 11: 16.4%), flake size ≥ 70%, flake strength ≥ 75%;
+with all six photos, flake strength stays ≥ 85% and colour-shift
+identification ≥ 50 of 54. If coat roughness from the flash stays below
+~25%, A is ruled out and B is next. Either way, coat weight (except candy),
+peel, film IOR and candy's tint are expected to stay near 0%: Findings 13–14
+point to the capture, not the training, for those.
+
+---
+
 ## Not yet run
 
+- **Run 12** (v2, highest priority): `train_multi.py --photos flash+random`,
+  everything else as Run 11; predictions under Runs 10 and 11. Then, depending
+  on its outcome, a flash slot in the pooling (Finding 15, B), and Runs 13–14
+  from `v2_plan.md` §4 (v1 initialisation; v1 code on v5 flash photos).
 - **Held-out test sets** (highest priority for the report): 300 fresh samples
   per lighting condition at indices 2000+, scored with `--test-root`, so the
   reported numbers come from samples never used for training *or* for
