@@ -129,11 +129,15 @@ All on a held-out test set (`dataset_v5_test`, seeds from 100000).
 | # | Run | Command difference | Question |
 |---|---|---|---|
 | 10 | **v5 single-flash baseline** | `train_multi.py --photos flash` | What can one flash photo do on every paint type? |
-| 11 | **v5 multi-light** | `train_multi.py` (random 1–4 photos) | The main model |
-| 12 | v5 multi-light, v1 init | `--init-from runs/v4_long/best.pt` | Does v1's training transfer? |
-| 13 | v1 code on v5 flash photos (optional) | `train.py --root dataset_v5 --epochs 150 --schedule cosine` | Sanity check against Run 10 |
+| 11 | **v5 multi-light** | `train_multi.py` (random 1–6 photos) | The main model |
+| 12 | v5 multi-light, flash always included | `--photos flash+random` | Was Run 11 held back by training without the flash photo? (added after Runs 10–11) |
+| 13 | v5 multi-light, v1 init | `--init-from runs/v4_long/best.pt` | Does v1's training transfer? |
+| 14 | v1 code on v5 flash photos (optional) | `train.py --root dataset_v5 --epochs 150 --schedule cosine` | Sanity check against Run 10 |
 
-Run 13 is only roughly comparable with Run 10. v1's loader has no masks, so
+Runs 13 and 14 were numbered 12 and 13 until 2026-10-09, when Run 12 was
+added; neither had been run.
+
+Run 14 is only roughly comparable with Run 10. v1's loader has no masks, so
 for solid paint `flake_scale` is a random target there. Compare coat
 roughness, flake strength, coat weight and peel only, and expect small
 differences from batch size (v1 8, v2 4) and the extra heads.
@@ -148,6 +152,10 @@ flash+side1 / flash+3 sides / all). Predictions, from the physics above:
 | coat_weight | ~0% (as in v1) | > 0 |
 | peel_strength | ~0% | small gain at most (still no environment to reflect) |
 | flake size / strength, coat roughness | as v1 (70–90%) | similar or slightly higher |
+
+**Outcome (2026-10-09):** Runs 10–11 in `ablations.md` (Findings 12–15). Most
+of these predictions failed, and the multi-light model did not beat the
+flash-only one; Run 12 tests the first explanation.
 | pigment: pearl/colour-shift vs metallic confusions | frequent | rare |
 
 If film_ior stays at ~0% even with side lights, the likely reasons are its

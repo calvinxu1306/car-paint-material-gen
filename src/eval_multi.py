@@ -12,6 +12,10 @@ several times, each time shown a different set of photos:
                      (--max-photos); never more, since the network has never
                      seen more and max-pooled features grow with the count
 
+Only sets the run could have seen in training are scored: a --photos flash
+run gets the flash set alone, and a --photos flash+random run (which always
+had the flash photo) gets no side1 row.
+
 For every set it reports SKILL (as eval_baseline.py: how much of the
 do-nothing baseline's error the model removes; 0% = learned nothing) for the
 maps, for each layer parameter, and the pigment-type accuracy.
@@ -77,10 +81,13 @@ def pick_device(requested: str) -> torch.device:
     return torch.device("cpu")
 
 
-def photo_sets(names: list[str], max_photos: int) -> dict[str, list[int]]:
+def photo_sets(names: list[str], max_photos: int,
+               policy: str = "random") -> dict[str, list[int]]:
     """Named photo subsets, as indices into the dataset's photo list. No set is
     larger than max_photos: the network never trained on more photos than
-    that, and max-pooled features keep growing with the photo count."""
+    that, and max-pooled features keep growing with the photo count. Runs
+    trained with the flash photo in every sample (policy flash or
+    flash+random) only get sets that contain it."""
     if "photo" not in names:
         raise SystemExit(f"no flash photo ('photo') among {names}")
     flash = names.index("photo")
@@ -95,6 +102,8 @@ def photo_sets(names: list[str], max_photos: int) -> dict[str, list[int]]:
     n_all = min(max_photos, len(names))
     if n_all > 4:
         sets[f"all {n_all}"] = [flash] + sides[:n_all - 1]
+    if policy in ("flash", "flash+random"):
+        sets = {name: idx for name, idx in sets.items() if flash in idx}
     return sets
 
 
@@ -236,7 +245,11 @@ def main():
     if pigs != cfg.get("pigments", pigs):
         raise SystemExit(f"the run's pigment order {cfg['pigments']} differs from "
                          f"the data's {pigs}; the type head would be misread")
-    max_photos = cfg["args"].get("max_photos") or len(eval_ds.photo_names)
+    policy = cfg["args"].get("photos", "random")
+    # config.json records the dataset's photo count as max_photos even for a
+    # flash-only run, which never saw more than the one photo.
+    max_photos = (1 if policy == "flash"
+                  else cfg["args"].get("max_photos") or len(eval_ds.photo_names))
     n_pig = max(len(pigs), 1)
     # Runs from before prenorm_global existed were trained without it.
     model = MultiLightPaintNet(**{"prenorm_global": False, **cfg["model_cfg"]}).to(device)
@@ -244,14 +257,14 @@ def main():
     model.load_state_dict(ckpt["model"])
     model.eval()
     print(f"loaded {args.run}/{args.ckpt} (epoch {ckpt.get('epoch', '?')}), "
-          f"trained with photos={cfg['args']['photos']}, up to {max_photos} per sample")
+          f"trained with photos={policy}, up to {max_photos} per sample")
     print(f"scoring {len(eval_ds)} samples: {where}")
     print(f"baselines from {len(train_ds)} training samples\n")
 
     # Baselines only need targets, so load just one photo per training sample.
     map_mean, s_mean, ps_mean = training_means(
         MultiLightDataset(root, split="train", photos=["photo"]), n_pig)
-    sets = photo_sets(eval_ds.photo_names, max_photos)
+    sets = photo_sets(eval_ds.photo_names, max_photos, policy)
     results = {}
     accs = score_all(model, eval_ds, sets, device, map_mean, s_mean, ps_mean,
                      n_pig, args.batch_size)
@@ -300,18 +313,18 @@ def main():
         print(f"(pigment = type accuracy, not skill. Always guessing the commonest "
               f"type would score {100 * conf0.sum(1).max() / conf0.sum():.0f}%)")
 
-    # 2. Real-unit errors, flash vs. most photos.
-    best_set = list(results)[-1]
-    print(f"\nLAYER PARAMETERS, mean error in real units: flash | {best_set}")
+    # 2. Real-unit errors, flash vs. most photos (just flash for a flash-only run).
+    shown = list(dict.fromkeys(["flash", list(results)[-1]]))
+    print(f"\nLAYER PARAMETERS, mean error in real units: {' | '.join(shown)}")
     for k in keys:
         lo, hi = train_ds.scalar_ranges[k]
         show = lambda e: f"{'n/a':>10}" if e != e else f"{e:>10.4f}"
-        print(f"  {k:<16}{show(results['flash']['scalar_err_real'][k])} |"
-              f"{show(results[best_set]['scalar_err_real'][k])}   (range {lo:g} to {hi:g})")
+        print(f"  {k:<16}" + " |".join(show(results[n]["scalar_err_real"][k]) for n in shown)
+              + f"   (range {lo:g} to {hi:g})")
 
     # 3. Per-pigment skill beyond knowing the type.
     if pigs:
-        for name in ("flash", best_set):
+        for name in shown:
             print(f"\nPER PIGMENT ({name}): skill vs that pigment's own average")
             print(f"{'pigment':<12}" + "".join(f"{SHORT.get(k, k)[:8]:>9}" for k in keys))
             for t, pg in enumerate(pigs):
@@ -319,7 +332,7 @@ def main():
                 print(f"{pg:<12}" + "".join(" " + fmt(row[k]) for k in keys))
 
         # 4. Confusions.
-        for name in ("flash", best_set):
+        for name in shown:
             print(f"\nPIGMENT CONFUSION ({name}): rows = true, columns = predicted")
             print(f"{'':<12}" + "".join(f"{p[:9]:>10}" for p in pigs))
             for t, pg in enumerate(pigs):
