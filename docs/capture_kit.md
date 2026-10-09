@@ -78,28 +78,33 @@ Swatch: ______________________  Camera height: ____ cm  Date: __________
 
 Copy the photos off the phone unedited (editing apps drop EXIF and change
 the size) and rename them in shooting order (IMG_0101 = flash, IMG_0102 =
-torch_1, …). One folder per swatch: `swatches\deep red pearl\flash.jpg`,
+torch_1, …). One folder per swatch, **outside the repo** (it isn't
+git-ignored): `C:\capture\swatches\deep red pearl\flash.jpg`,
 `torch_1.jpg` … `torch_5.jpg`, optional `notes.txt`.
 
 ## 5. Check before you pack up (PowerShell, in the repo root)
 
 ```
-python src/check_capture.py swatches
-python src/check_capture.py "swatches\deep red pearl" --camera-height-cm 27
-python src/check_capture.py swatches --export data\real_capture
+python src/check_capture.py C:\capture\swatches
+python src/check_capture.py "C:\capture\swatches\deep red pearl" --camera-height-cm 27
+python src/check_capture.py C:\capture\swatches --export C:\capture\real_capture
 ```
 
 Options: `--camera-height-cm` (28) and `--torch-distance-cm` (30) as
 measured; `--hfov-deg` (field of view across the long side: from EXIF, else
 70°); `--crop-cm 2` or `--crop x,y,size` (pixels) for a small or off-centre
-swatch. `--export` writes 256 px crops named like v5's photos (`photo.png`,
-`side1.png` …) plus `capture.json` (`data\real_capture` is not git-ignored).
+swatch. `--export` writes 256 px sRGB crops named like v5's photos
+(`photo.png`, `side1.png` …) plus `capture.json`. Caveat: a 3 cm crop from
+28 cm spans ~6°, a v5 render ~40°, so the crops see a much narrower range of
+angles; Phase 5 needs a matching v5 camera (or a larger swatch or closer
+camera) before predicting from them.
 
 What it checks, and the fix:
 
 - [ ] **Same size and orientation** → same phone, lens and zoom. If only the
       rotation tag flipped (it says so), add `--no-rotate`.
-- [ ] **Shift ≤ 3 px** from the flash photo → re-shoot; use the timer.
+- [ ] **Shift ≤ 2 px** of the 256 px export (~0.25 mm) from the flash photo
+      → re-shoot; use the timer.
 - [ ] **Same shutter, ISO, f-number** in every torch photo → lock exposure.
 - [ ] **Clipped**: < 2% of the swatch in torch photos, < 10% with the flash
       → move the torch back or lower the exposure.
@@ -108,6 +113,7 @@ What it checks, and the fix:
 - [ ] **Coverage**: ≥ 4 torch photos, no gap over 120° between directions,
       one light below 35° and one above 50°. The directions (from the
       reflection in the black sheet) should match your table; "< X deg" =
-      reflection out of the picture, so trust your table there.
+      reflection out of the picture, so trust your table there; "may be on
+      something lit" = it may have hit the card → trim the card.
 - [ ] **By eye** (not checked): no shadows on the swatch, no room light, no
       dust or fingerprints, the swatch fills the middle 3 × 3 cm.

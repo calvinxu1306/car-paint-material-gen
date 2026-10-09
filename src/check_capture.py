@@ -13,8 +13,12 @@ re-shooting. So this script checks, for every swatch:
 
     photos     every photo the same size and orientation (after the EXIF
                rotation tag, as a photo viewer shows them)
+    colour     photos with a colour profile other than sRGB (iPhones shoot
+               Display P3) are converted to sRGB, v5's colour space
     alignment  how far each torch photo is shifted from the flash photo
-               (phase correlation); more than 3 px = the phone or swatch moved
+               (phase correlation), in pixels of the 256 px export, so the
+               limit means the same at 12 and 48 MP; more than 2 = the phone
+               or swatch moved
     exposure   shutter time, ISO and f-number the same in every torch photo
                (EXIF), i.e. the exposure really was locked
     clipping   how much of the swatch is blown out (any channel >= 250)
@@ -71,16 +75,26 @@ round trip for many random torches). The azimuth hardly depends on R; the
 elevation does: a torch 25 cm away read as 30 cm comes out 3-6 deg too high,
 so the kit has you hold the torch at a measured distance.
 
-No highlight in the frame means the mirror point lies beyond the frame edge
+No highlight in the frame: the azimuth then comes from the brightness
+gradient across the swatch: a torch 30 cm away lights its own side ~15-35%
+more (inverse square law, cosine of incidence). The torch photo is divided
+by the flash photo first, which lights the swatch evenly from the camera, so
+paint that is brighter or thicker on one side doesn't count (only where the
+flash photo is near its darkest: the flash's own glow on a gloss coat would
+count instead; see brightness_gradient()). Good to ~10-25 deg. If the frame is
+glossy black all the way from the centre to the edge on the torch's side
+(within 30 deg of that azimuth), the mirror point lies beyond the frame edge
 (d > d_edge), so the torch was LOWER than the elevation computed at the edge
-(reported as "< X deg"). The azimuth then comes from the brightness gradient
-across the swatch: a torch 30 cm away lights its own side ~15-35% more
-(inverse square law, cosine of incidence). No bound is given for a photo too
-bright to search, nor when no torch photo of a swatch shows a reflection:
-then the mirror points most likely fell off the glossy surface (which is why
-the kit puts the swatch on glossy black). A bright spot only counts as a
-reflection if it is far brighter than a lit object there would be, judged
-from the flash photo: a speck of dust near a low torch clips too.
+(reported as "< X deg"). But a reflection that lands on something lit in
+the flash photo (an untrimmed card, a label, matte paint) doesn't show
+either, so if such a thing reaches out far enough on that side to hide a
+torch below 65 deg (v5's highest side light; the kit's is 60), no bound is
+given: the elevation is unknown. No bound either for a photo too bright to
+search, nor when no torch photo of a swatch shows a reflection: then the
+mirror points most likely fell off the glossy surface (which is why the kit
+puts the swatch on glossy black). A bright spot only counts as a reflection
+if it is far brighter than a lit object there would be, judged from the
+flash photo: a speck of dust near a low torch clips too.
 
 Azimuths use v5's convention (params_*.json "azimuth_deg"): 0 = towards the
 photo's right edge, 90 = towards its top edge, counter-clockwise. The clock
@@ -88,20 +102,24 @@ position (12 = top of the photo) is the same direction for the paper table.
 In the flash photo the flash's own highlight marks the point straight below
 the camera; its distance from the centre gives the camera's tilt.
 
---export DIR writes every swatch without errors to DIR/<swatch name>/: the
-same square cropped from every photo (default: a 3 cm square at the centre,
---crop-cm; or --crop x,y,size in pixels of the photo as a viewer shows it),
-resized to 256 px like v5's renders, named like v5's photos: photo.png = the
+--export DIR writes every swatch without errors to DIR/<swatch name>/ (the
+swatch folder's own name, also when it is given as "."): the same square
+cropped from every photo (default: a 3 cm square at the centre, --crop-cm;
+or --crop x,y,size in pixels of the photo as a viewer shows it), resized to
+256 px like v5's renders, in sRGB, named like v5's photos: photo.png = the
 flash photo, side1.png, side2.png ... = the torch photos in their numbered
 order. capture.json next to them holds the light estimates and the checks,
 for a later prediction script. Note for that script: a 3 cm crop seen from
 28 cm spans ~6 deg; a v5 render spans ~40 deg (the whole frame is paint), so
 the crop sees a much narrower range of angles than the renders did.
 
+Keep the photos and the export OUTSIDE the repo (neither folder is
+git-ignored, and phone photos are large), e.g. in C:/capture.
+
 RUN (from the repo root; PowerShell is happy with / in paths)
-    python src/check_capture.py swatches
-    python src/check_capture.py "swatches/deep red pearl" --camera-height-cm 27
-    python src/check_capture.py swatches --export data/real_capture
+    python src/check_capture.py C:/capture/swatches
+    python src/check_capture.py "C:/capture/swatches/deep red pearl" --camera-height-cm 27
+    python src/check_capture.py C:/capture/swatches --export C:/capture/real_capture
     python src/check_capture.py --self-test
 Dependencies: numpy and Pillow only.
 """
@@ -109,6 +127,7 @@ Dependencies: numpy and Pillow only.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import os
@@ -118,6 +137,11 @@ import sys
 
 import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
+
+try:
+    from PIL import ImageCms          # colour management (littlecms), in Pillow's wheels
+except ImportError:
+    ImageCms = None
 
 # Phone photos are large (48-200 MP modes exist). These are the user's own
 # files, so lift Pillow's decompression-bomb guard well above that.
@@ -132,7 +156,7 @@ EXPORT_RES = 256         # v5's render size
 DIAG_35MM = math.hypot(36.0, 24.0)
 
 # --- Thresholds -------------------------------------------------------------
-MAX_SHIFT_PX = 3.0       # torch photo vs flash photo, in photo pixels
+MAX_SHIFT = 2.0          # torch photo vs flash photo, in pixels of the 256 px export
 MIN_MATCH = 8.0          # phase-correlation peak-to-sidelobe ratio
 MAX_CLIPPED = 0.02       # fraction of the swatch at >= 250 in any channel
 MAX_CLIPPED_FLASH = 0.10 # the flash's own hotspot on a gloss coat is allowed some
@@ -143,7 +167,12 @@ MAX_TILT_DEG = 5.0
 MIN_TORCH_PHOTOS = 4
 MAX_AZIMUTH_GAP = 120.0
 LOW_ELEV, HIGH_ELEV = 35.0, 50.0
-MIN_GRADIENT = 0.04      # relative brightness change across the swatch
+MIN_GRADIENT = 0.04      # relative change of torch / flash brightness across the swatch
+
+# Where a missing reflection could hide: lit (diffuse) areas of the flash photo
+LIT_VS_BLACK = 4.0       # brighter than this x the photo's black level = lit, not glossy black
+LIT_CELL_CM = 0.5        # judged in cells this big, so dust specks don't count
+MAX_HIDDEN_ELEV = 65.0   # a lit area that could only hide a torch above this doesn't matter
 
 # Highlight search, on the downsampled grey copy (values 0..1)
 ANALYSIS_SIZE = 1024     # long side of the copy used for alignment/highlights
@@ -168,6 +197,12 @@ TAG_FLASH, TAG_WHITE_BALANCE, TAG_FOCAL_35MM = 0x9209, 0xA403, 0xA405
 
 
 # --- Small helpers ----------------------------------------------------------
+def swatch_name(folder: str) -> str:
+    """The swatch folder's own name. abspath first: "." (run from inside the
+    swatch folder) or "swatches/red/" must give "red", not "." or ""."""
+    return os.path.basename(os.path.abspath(folder))
+
+
 def to_clock(az: float) -> str:
     """Azimuth (0 = photo's right edge, 90 = top) -> clock position, nearest half hour."""
     half = round(((90.0 - az) % 360.0) / 15.0) / 2.0 % 12.0
@@ -326,21 +361,82 @@ def sharpness(grey: np.ndarray) -> float:
     return float(laplacian(g).var()) / soft if soft > 1e-12 else float("nan")
 
 
-def brightness_gradient(crop: Image.Image):
-    """Fit brightness = a + b x + c y over the swatch (linear light, x right,
-    y up, both -0.5..0.5). Returns (azimuth of the brighter side, relative
-    change across the swatch |(b, c)| / a)."""
-    small = np.asarray(crop.resize((64, 64), Image.Resampling.BOX),
-                       dtype=np.float32) / 255.0
-    lin = srgb_to_linear(small)
-    lum = 0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]
+def brightness_gradient(crop: Image.Image, flash_crop: Image.Image):
+    """Fit log(torch / flash) = a + b x + c y over the swatch (linear light,
+    x right, y up, both -0.5..0.5) on a 64x64 grid. The flash lights the
+    swatch evenly from the camera, so dividing by the flash photo cancels
+    the paint's own unevenness (a brighter or thicker side), which can be as
+    large as the torch's own 15-35% and point anywhere.
+
+    But on a gloss coat the flash photo also holds the flash's own
+    reflection, whose glow can spread over the whole swatch and, divided
+    out, would turn the fit as much (on synthetic swatches by up to 170
+    deg). So only cells where the flash photo is near its darkest, 0.5-1.5x
+    its 10th percentile (the paint lit by the flash alone), are used; that
+    choice is made on the flash photo, so it favours neither side of the
+    torch's gradient. On synthetic swatches (torch all round, uniform and
+    25%-graded paint, dark to light) that left up to ~25 deg of error.
+    Fitted in log space, where the paint's own brightness drops out
+    exactly. Returns (azimuth of the brighter side, relative change across
+    the swatch |(b, c)|), or (None, 0.0) if too little of it is usable."""
+    def grid(im):
+        rgb = np.asarray(im, dtype=np.float32) / 255.0
+        lin = srgb_to_linear(rgb)
+        lum = (0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2])
+        clipped = (rgb.max(axis=2) >= 250 / 255).astype(np.float32)
+        small = lambda a: np.asarray(Image.fromarray(a.astype(np.float32)).resize(
+            (64, 64), Image.Resampling.BOX))
+        return small(lum), small(clipped) > 0
+
+    torch_lum, torch_clip = grid(crop)
+    flash_lum, flash_clip = grid(flash_crop)
+    ok = ~torch_clip & ~flash_clip & (torch_lum > 1e-6)
+    level = float(np.percentile(flash_lum[ok], 10)) if ok.any() else 0.0
+    ok &= (flash_lum > 0.5 * level) & (flash_lum < 1.5 * level)
+    if ok.sum() < 256 or level <= 1e-6:
+        return None, 0.0
     t = (np.arange(64) + 0.5) / 64 - 0.5
     yy, xx = np.meshgrid(-t, t, indexing="ij")          # row 0 = top = +y
-    A = np.stack([np.ones(lum.size), xx.ravel(), yy.ravel()], axis=1)
-    (a, b, c), *_ = np.linalg.lstsq(A, lum.ravel(), rcond=None)
-    if a <= 1e-6:
-        return None, 0.0
-    return math.degrees(math.atan2(c, b)) % 360.0, float(math.hypot(b, c) / a)
+    A = np.stack([np.ones(int(ok.sum())), xx[ok], yy[ok]], axis=1)
+    (a, b, c), *_ = np.linalg.lstsq(A, np.log(torch_lum[ok] / flash_lum[ok]), rcond=None)
+    return math.degrees(math.atan2(c, b)) % 360.0, float(math.hypot(b, c))
+
+
+def lit_grid(flash_grey: np.ndarray, scale, cm_per_px, height_cm) -> np.ndarray:
+    """Where the flash photo shows something lit - the paint, the card, a
+    label - rather than dark glossy backing, on a grid of LIT_CELL_CM cells
+    (True = lit). The flash sits next to the lens, so once its fall-off
+    towards the corners (cos^3 of the angle off the axis: cosine of
+    incidence over distance squared) is divided out, it lights the frame
+    evenly, and a diffuse surface is many times brighter than the black
+    backing, whose level is taken as the photo's 10th percentile. A cell
+    counts if most of it is lit, so a dust speck doesn't."""
+    h, w = flash_grey.shape
+    x = ((np.arange(w) + 0.5) * scale[0] - w * scale[0] / 2) * cm_per_px
+    y = ((np.arange(h) + 0.5) * scale[1] - h * scale[1] / 2) * cm_per_px
+    cos = height_cm / np.sqrt(height_cm ** 2 + x[None, :] ** 2 + y[:, None] ** 2)
+    lin = srgb_to_linear(flash_grey) / cos ** 3
+    lit = lin > max(LIT_VS_BLACK * float(np.percentile(lin, 10)), 0.01)
+    cell = LIT_CELL_CM / (cm_per_px * scale[0])           # analysis px per cell
+    size = (max(1, round(lit.shape[1] / cell)), max(1, round(lit.shape[0] / cell)))
+    frac = Image.fromarray(lit.astype(np.float32)).resize(size, Image.Resampling.BOX)
+    return np.asarray(frac) > 0.5
+
+
+def lit_reach(lit: np.ndarray, azimuths, W, H, cm_per_px):
+    """The farthest lit cell along any of these azimuths, from the frame
+    centre to its edge: (distance in cm, azimuth), or None if all dark."""
+    gh, gw = lit.shape
+    best = None
+    for az in azimuths:
+        c, s = math.cos(math.radians(az)), math.sin(math.radians(az))
+        r = np.arange(0.0, edge_offset_px(az, W, H), min(W / gw, H / gh) / 2)
+        col = np.clip(((W / 2 + r * c) * gw / W).astype(int), 0, gw - 1)
+        row = np.clip(((H / 2 - r * s) * gh / H).astype(int), 0, gh - 1)
+        hit = r[lit[row, col]]
+        if hit.size and (best is None or hit[-1] > best[0]):
+            best = (float(hit[-1]), az)
+    return None if best is None else (best[0] * cm_per_px, best[1])
 
 
 def components(mask: np.ndarray):
@@ -516,8 +612,35 @@ def read_exif(img: Image.Image) -> dict:
             "camera": " ".join(t for t in (text(TAG_MAKE), text(TAG_MODEL)) if t)}
 
 
+def to_srgb(img: Image.Image, icc: bytes | None):
+    """Convert from the photo's embedded colour profile to sRGB, v5's colour
+    space and what the repo's loaders assume (they ignore profiles). iPhones
+    shoot Display P3, even as "Most Compatible" JPEG: read as sRGB numbers,
+    its colours would come out duller than they are. Returns (image,
+    {"profile": its name or None, "converted": bool}, a note or None)."""
+    if not icc:
+        return img, {"profile": None, "converted": False}, None
+    if ImageCms is None:
+        return (img, {"profile": "?", "converted": False},
+                "this Pillow has no colour management (ImageCms): its colour profile was "
+                "ignored, colours taken as sRGB")
+    try:
+        src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+        name = ImageCms.getProfileDescription(src).strip()
+        if "srgb" in name.lower():
+            return img, {"profile": name, "converted": False}, None
+        out = ImageCms.profileToProfile(img, src, ImageCms.createProfile("sRGB"),
+                                        renderingIntent=1,      # relative colorimetric
+                                        outputMode="RGB")
+        return out, {"profile": name, "converted": True}, None
+    except (ImageCms.PyCMSError, OSError, ValueError, TypeError) as e:
+        return (img, {"profile": "unreadable", "converted": False},
+                f"its colour profile can't be used ({e}): colours taken as sRGB")
+
+
 def open_photo(path: str, rotate: bool):
-    """-> (RGB image as a viewer shows it, size as stored, EXIF dict), or an error message."""
+    """-> (RGB image as a viewer shows it, in sRGB; size as stored; EXIF
+    dict; colour profile dict; a note or None), or an error message."""
     try:
         with open(path, "rb") as f:
             head = f.read(16)
@@ -531,8 +654,10 @@ def open_photo(path: str, rotate: bool):
                         f"JPEG or PNG")
             exif = read_exif(im)
             stored = im.size
+            icc = im.info.get("icc_profile")
             out = ImageOps.exif_transpose(im) if rotate else im.copy()
-            return out.convert("RGB"), stored, exif
+            out, colour, note = to_srgb(out.convert("RGB"), icc)
+            return out, stored, exif, colour, note
     except UnidentifiedImageError:
         return f"can't read {os.path.basename(path)}: not a JPEG/PNG/TIFF image"
     except OSError as e:
@@ -543,7 +668,7 @@ def open_photo(path: str, rotate: bool):
 def check_swatch(folder: str, opts) -> dict:
     """Run every check on one swatch folder. Returns the report as a dict;
     'crops' holds the cropped photos for --export (not JSON)."""
-    rep = {"name": os.path.basename(os.path.normpath(folder)), "folder": folder,
+    rep = {"name": swatch_name(folder), "folder": folder,
            "issues": [], "photos": [], "crops": {}}
     issue = lambda level, msg: rep["issues"].append((level, msg))
     flash_path, torch, file_issues = list_photos(folder)
@@ -557,7 +682,9 @@ def check_swatch(folder: str, opts) -> dict:
     if isinstance(loaded, str):
         issue("ERROR", loaded)
         return rep
-    img, stored, exif = loaded
+    img, stored, exif, colour, note = loaded
+    if note:
+        issue("NOTE", f"{os.path.basename(flash_path)}: {note}")
     W, H = img.size
     rep["size"] = [W, H]
     rep["camera"] = exif["camera"]
@@ -593,19 +720,20 @@ def check_swatch(folder: str, opts) -> dict:
                    "view_angle_deg": math.degrees(2 * math.atan(
                        side * cm_per_px / 2 / opts.camera_height_cm))}
 
-    def measure(name, img, exif, stored):
+    def measure(name, img, exif, stored, colour):
         crop = img.crop(box)
         rgb = np.asarray(crop)
         grey_crop = np.asarray(crop.convert("L"), dtype=np.float32)
         grey, scale = analysis_grey(img)
-        return {"file": name, "stored_size": list(stored), "exif": exif,
+        return {"file": name, "stored_size": list(stored), "exif": exif, "colour": colour,
                 "clipped": float((rgb.max(axis=2) >= 250).mean()),
                 "brightness": float(np.median(grey_crop)) / 255.0,
                 "sharpness_raw": sharpness(grey_crop),
                 "crop": crop, "grey": grey, "scale": scale}
 
-    flash = measure(os.path.basename(flash_path), img, exif, stored)
+    flash = measure(os.path.basename(flash_path), img, exif, stored, colour)
     flash["role"] = "photo"
+    flash["lit"] = lit_grid(flash["grey"], flash["scale"], cm_per_px, opts.camera_height_cm)
     del img
 
     # The flash's own highlight sits straight below the camera: its offset
@@ -635,7 +763,9 @@ def check_swatch(folder: str, opts) -> dict:
         if isinstance(loaded, str):
             issue("ERROR", loaded)
             continue
-        img, stored, exif = loaded
+        img, stored, exif, colour, note = loaded
+        if note:
+            issue("NOTE", f"{name}: {note}")
         if img.size != (W, H):
             same_stored = tuple(stored) == tuple(flash["stored_size"])
             hint = (" They are the same size as stored, so the phone changed its rotation "
@@ -645,13 +775,15 @@ def check_swatch(folder: str, opts) -> dict:
             issue("ERROR", f"{name} is {img.size[0]}x{img.size[1]} but {flash['file']} is "
                            f"{W}x{H}.{hint}")
             continue
-        ph = measure(name, img, exif, stored)
+        ph = measure(name, img, exif, stored, colour)
         del img
         ph["role"] = f"side{len([p for p in rep['photos'] if p['role'] != 'photo']) + 1}"
         ph["torch_number"] = n
 
         dx, dy, psr = phase_shift(flash["grey"], ph["grey"])
         ph["shift_px"] = [dx * ph["scale"][0], dy * ph["scale"][1]]
+        # What matters is the misalignment in the exported crop.
+        ph["shift_export_px"] = math.hypot(*ph["shift_px"]) * EXPORT_RES / side
         ph["match"] = psr
         ph["sharpness"] = (ph["sharpness_raw"] / flash["sharpness_raw"]
                            if flash["sharpness_raw"] > 0 else float("nan"))
@@ -664,18 +796,19 @@ def check_swatch(folder: str, opts) -> dict:
         # swatch, and then a missing reflection says nothing about elevation.
         for p in torch_ph:
             p["light"]["elevation_max_deg"] = p["light"]["elevation_at_edge_deg"] = None
+            p["light"]["lit_area_cm"] = None
     judge_photos(rep, flash, torch_ph, issue)
     judge_exposure(flash, torch_ph, issue)
     judge_coverage(rep, torch_ph, issue)
     rep["crops"] = {p["role"]: p.pop("crop") for p in rep["photos"]}
     for p in rep["photos"]:
-        p.pop("grey"), p.pop("scale")
+        p.pop("grey"), p.pop("scale"), p.pop("lit", None)
     return rep
 
 
 def estimate_light(ph, flash, W, H, cm_per_px, q, opts) -> dict:
     hl, why = find_highlight(ph["grey"], ph["scale"], ref=flash["grey"])
-    grad_az, grad = brightness_gradient(ph["crop"])
+    grad_az, grad = brightness_gradient(ph["crop"], flash["crop"])
     light = {"gradient_azimuth_deg": grad_az if grad >= MIN_GRADIENT else None,
              "gradient_strength": grad}
     if hl:
@@ -685,22 +818,32 @@ def estimate_light(ph, flash, W, H, cm_per_px, q, opts) -> dict:
         if light["azimuth_deg"] is None:     # torch nearer than assumed
             light["azimuth_deg"] = light["highlight_azimuth_deg"]
         return light
-    # No mirror image in the frame: the mirror point lies beyond the edge, so
-    # the torch was lower than it would be with the highlight right at the edge
-    # - unless the photo was too bright to find one at all.
+    # No mirror image in the frame. The gradient's azimuth is rough, so look
+    # at every direction within 30 deg of it (all round if there's none).
     az = light["gradient_azimuth_deg"]
-    # The gradient's azimuth is rough, so take the nearest edge within 30 deg
-    # of it (any direction if there's no gradient): the bound then still holds.
-    near = range(-30, 31, 5) if az is not None else range(0, 360, 5)
-    edge_cm = min(edge_offset_px((az or 0.0) + a, W, H) for a in near) * cm_per_px
+    cone = [az + a for a in range(-30, 31, 2)] if az is not None else list(range(0, 360, 2))
+    # If the frame is glossy black that way, the mirror point lies beyond the
+    # edge: the torch was lower than with the highlight at the nearest edge.
+    edge_cm = min(edge_offset_px(a, W, H) for a in cone) * cm_per_px
     edge = ((edge_cm * math.cos(math.radians(az)), edge_cm * math.sin(math.radians(az)))
             if az is not None else (edge_cm, 0.0))
     bound = light_from_offset(edge, opts.camera_height_cm, q, opts.torch_distance_cm)
-    bounded = not why.startswith("too bright")
+    # But the reflection may instead have landed on something lit (the card),
+    # which matters if that reaches out far enough to hide a torch in range.
+    reach = lit_reach(flash["lit"], cone, W, H, cm_per_px)
+    hides = False
+    if reach:
+        d, a = reach
+        off = (d * math.cos(math.radians(a)), d * math.sin(math.radians(a)))
+        hidden = light_from_offset(off, opts.camera_height_cm, q, opts.torch_distance_cm)
+        hides = hidden["elevation_deg"] is None or hidden["elevation_deg"] < MAX_HIDDEN_ELEV
+    too_bright = why.startswith("too bright")
+    bounded = not too_bright and not hides
     light.update(source="gradient" if az is not None else None, no_highlight=why,
                  azimuth_deg=az, elevation_deg=None,
                  elevation_max_deg=bound["elevation_deg"] if bounded else None,
-                 elevation_at_edge_deg=bound["elevation_at_highlight_deg"] if bounded else None)
+                 elevation_at_edge_deg=bound["elevation_at_highlight_deg"] if bounded else None,
+                 lit_area_cm=reach[0] if hides and not too_bright else None)
     return light
 
 
@@ -711,14 +854,16 @@ def judge_photos(rep, flash, torch_ph, issue):
                       f"much is not): lower the exposure for the flash photo")
     for ph in torch_ph:
         name = ph["file"]
-        sx, sy = ph["shift_px"]
-        shift = math.hypot(sx, sy)
+        shift = math.hypot(*ph["shift_px"])
         if ph["match"] < MIN_MATCH:
             issue("WARN", f"{name} could not be matched to {flash['file']} (match "
                           f"{ph['match']:.1f}): rotated, zoomed or moved a lot? Re-shoot it.")
-        elif shift > MAX_SHIFT_PX:
-            issue("WARN", f"{name} is shifted {shift:.1f} px from {flash['file']} (more than "
-                          f"{MAX_SHIFT_PX:g}): the phone or the swatch moved. Re-shoot it.")
+        elif ph["shift_export_px"] > MAX_SHIFT:
+            issue("WARN", f"{name} is shifted {ph['shift_export_px']:.1f} px in the "
+                          f"{EXPORT_RES} px export from {flash['file']} (more than "
+                          f"{MAX_SHIFT:g}; {shift:.1f} px in the photo, "
+                          f"{shift * rep['geometry']['cm_per_px'] * 10:.2f} mm): the phone or "
+                          f"the swatch moved. Re-shoot it.")
         if ph["clipped"] > MAX_CLIPPED:
             issue("WARN", f"{name}: {100 * ph['clipped']:.0f}% of the swatch is clipped to "
                           f"white: torch too close/bright, or the exposure too high")
@@ -806,6 +951,7 @@ def judge_coverage(rep, torch_ph, issue):
                          and l["elevation_max_deg"] < LOW_ELEV) for l in lights)
     cov["high"] = any(l["elevation_deg"] is not None and l["elevation_deg"] > HIGH_ELEV
                       for l in lights)
+    hidden = [p["file"] for p in torch_ph if p["light"].get("lit_area_cm") is not None]
     if n and not any(l["source"] == "highlight" for l in lights):
         issue("WARN", "no torch reflection in any photo, so the elevations are unknown: put "
                       "the swatch on glossy black (docs/capture_kit.md), or check your table "
@@ -813,12 +959,19 @@ def judge_coverage(rep, torch_ph, issue):
     else:
         assumed = (f" (elevations assume the torch was {distance:g} cm from the swatch; "
                    f"set --torch-distance-cm if it wasn't)")
+        if hidden:
+            assumed += "; or trim the card so the missing reflections show (NOTE below)"
         if n and not cov["low"]:
             issue("WARN", f"no light confirmed below {LOW_ELEV:g} deg: add a low, raking "
                           f"torch position (about 10 cm above the table)" + assumed)
         if n and not cov["high"]:
             issue("WARN", f"no light confirmed above {HIGH_ELEV:g} deg: add a high torch "
                           f"position (about 25 cm up, close to the phone)" + assumed)
+    if hidden:
+        issue("NOTE", f"no reflection in {', '.join(hidden)}, and the flash photo shows "
+                      f"something lit (the card? a label?) on the torch's side, where it may "
+                      f"have landed: elevation unknown. Trim the card close to the paint and "
+                      f"keep the black sheet clear.")
     rep["coverage"] = cov
 
 
@@ -841,7 +994,9 @@ def describe_light(l: dict) -> str:
           else "?")
     how = ("azimuth from the brightness gradient" if l["azimuth_deg"] is not None
            else "no clear brightness gradient either")
-    return f"{az}  {el:>8}   [no highlight in frame; {how}]"
+    where = (f"no highlight; may be on something lit up to {l['lit_area_cm']:.0f} cm out"
+             if l.get("lit_area_cm") is not None else "no highlight in frame")
+    return f"{az}  {el:>8}   [{where}; {how}]"
 
 
 def print_report(rep: dict) -> None:
@@ -855,19 +1010,24 @@ def print_report(rep: dict) -> None:
               + (f", {rep['camera']}" if rep["camera"] else ""))
         print(f"  geometry  camera {g['camera_height_cm']:g} cm up, {g['hfov_deg']:.0f} deg "
               f"across the long side ({g['hfov_source']}) -> {g['cm_per_px'] * 10:.3f} mm per px")
-        print(f"  swatch    x={c['x']} y={c['y']} size={c['size']} px ({c['source']})")
+        print(f"  swatch    x={c['x']} y={c['y']} size={c['size']} px ({c['source']}) -> "
+              f"{EXPORT_RES} px export, {c['size_cm'] * 10 / EXPORT_RES:.2f} mm per px "
+              f"(the shift column)")
+        converted = sorted({p["colour"]["profile"] for p in photos if p["colour"]["converted"]})
+        if converted:
+            print(f"  colour    {', '.join(converted)} -> converted to sRGB")
         fh = rep.get("flash_highlight")
         if fh:
             print(f"  flash     highlight {fh['offset_cm']:.1f} cm from the centre -> camera "
                   f"tilt ~{fh['tilt_deg']:.0f} deg")
-        print(f"\n  {'photo':<16}{'shift px':>9}{'match':>7}{'sharp':>7}{'clipped':>9}   "
+        print(f"\n  {'photo':<16}{'shift':>9}{'match':>7}{'sharp':>7}{'clipped':>9}   "
               f"light: azimuth (clock)  elevation at the swatch")
         for p in photos:
             if p["role"] == "photo":
                 print(f"  {p['file']:<16}{'-':>9}{'-':>7}{1.0:>7.2f}"
                       f"{100 * p['clipped']:>8.1f}%   (flash)")
                 continue
-            print(f"  {p['file']:<16}{math.hypot(*p['shift_px']):>9.1f}{p['match']:>7.1f}"
+            print(f"  {p['file']:<16}{p['shift_export_px']:>9.1f}{p['match']:>7.1f}"
                   f"{p['sharpness']:>7.2f}{100 * p['clipped']:>8.1f}%   "
                   f"{describe_light(p['light'])}")
         cov = rep.get("coverage")
@@ -898,8 +1058,8 @@ def finite(x):
 
 
 def jsonable(rep: dict) -> dict:
-    keep = ("file", "role", "torch_number", "shift_px", "match", "sharpness", "clipped",
-            "brightness", "light", "exif")
+    keep = ("file", "role", "torch_number", "shift_px", "shift_export_px", "match",
+            "sharpness", "clipped", "brightness", "light", "exif", "colour")
     return {
         "written_by": "src/check_capture.py",
         "swatch": rep["name"],
@@ -913,7 +1073,10 @@ def jsonable(rep: dict) -> dict:
                        "its top edge, counter-clockwise (as v5's params files). "
                        "elevation_deg: above the surface, seen from the swatch (crop) "
                        "centre, assuming the torch was geometry.torch_distance_cm away; "
-                       "elevation_max_deg: an upper bound when no highlight was found.",
+                       "elevation_max_deg: an upper bound when no highlight was found; "
+                       "lit_area_cm: no bound because the reflection may have landed on "
+                       "something lit this far out. The PNGs are sRGB (converted from the "
+                       "photos' colour profile, per_photo colour).",
         "flash_highlight": rep.get("flash_highlight"),
         "coverage": rep.get("coverage"),
         "per_photo": [{k: p[k] for k in keep if k in p} for p in rep["photos"]],
@@ -924,20 +1087,32 @@ def jsonable(rep: dict) -> dict:
 
 def export_swatch(rep: dict, out_root: str) -> str:
     folder = os.path.join(out_root, rep["name"])
-    # The folder is replaced, so make sure this script wrote it: a mistyped
-    # --export (say, the swatches folder itself) must not delete photos.
+    # The folder is replaced, so it must be one level below out_root (a name
+    # like "." would make it the export root, with every other swatch in it)
+    # and written by this script: a mistyped --export (say, the swatches
+    # folder itself) must not delete photos.
+    if (rep["name"] in ("", ".", "..")
+            or os.path.dirname(os.path.abspath(folder)) != os.path.abspath(out_root)):
+        return f"not exported: {rep['name']!r} can't be a folder name in {out_root}"
+    if os.path.exists(folder) and not os.path.isdir(folder):
+        return f"not exported: {folder} exists and is not a folder"
     if os.path.isdir(folder) and os.listdir(folder) and (
             not os.path.exists(os.path.join(folder, "capture.json")) or has_photos(folder)):
         return (f"not exported: {folder} is not empty and wasn't written by this script "
                 f"(no capture.json, or it holds flash/torch photos). Refusing to replace it.")
-    if os.path.isdir(folder):
-        shutil.rmtree(folder)
-    os.makedirs(folder)
-    for role, crop in rep["crops"].items():
-        crop.resize((EXPORT_RES, EXPORT_RES), Image.Resampling.LANCZOS).save(
-            os.path.join(folder, f"{role}.png"))
-    with open(os.path.join(folder, "capture.json"), "w") as f:
-        json.dump(finite(jsonable(rep)), f, indent=2)
+    try:
+        if os.path.isdir(folder):
+            shutil.rmtree(folder)
+        os.makedirs(folder)
+        for role, crop in rep["crops"].items():
+            # icc_profile=None: the pixels are sRGB now; don't carry the
+            # source photo's profile along (an untagged PNG is sRGB).
+            crop.resize((EXPORT_RES, EXPORT_RES), Image.Resampling.LANCZOS).save(
+                os.path.join(folder, f"{role}.png"), icc_profile=None)
+        with open(os.path.join(folder, "capture.json"), "w") as f:
+            json.dump(finite(jsonable(rep)), f, indent=2)
+    except OSError as e:
+        return f"not exported: {e}"
     return f"exported {len(rep['crops'])} photos + capture.json to {folder}"
 
 
@@ -988,6 +1163,11 @@ def main(argv=None) -> int:
     ap.add_argument("--export", default=None, help="write 256 px crops + capture.json here")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args(argv)
+    # Swatch names are the user's own: printing one must not crash when the
+    # output goes to a file or a pipe (on Windows that uses the ANSI code page).
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
 
     if args.self_test:
         return 0 if self_test() else 1
@@ -1007,7 +1187,7 @@ def main(argv=None) -> int:
     results = []
     for folder in swatches:
         if not has_photos(folder):
-            print(f"\n=== {os.path.basename(folder)}: no flash.* or torch_N.* photos, skipped")
+            print(f"\n=== {swatch_name(folder)}: no flash.* or torch_N.* photos, skipped")
             continue
         rep = check_swatch(folder, args)
         print_report(rep)
