@@ -52,8 +52,13 @@ THEN the main run and its single-flash baseline (identical except --photos):
 
 MEMORY: a step pushes batch-size x k photos through the network - with the
 defaults (4 samples, up to 6 photos) up to 24 images, about 3x v1's batch of
-8. If the GPU runs out of memory: add --amp first, then --batch-size 2. Lowering
---max-photos also works; validation and eval_multi.py then stop at that many.
+8. If the GPU runs out of memory: --batch-size 2, or a lower --max-photos
+(validation and eval_multi.py then stop at that many). --amp (16-bit maths) is
+not recommended: Run 12's first attempt with it turned to NaN in epoch 2,
+and on an RTX 4070 it was only ~10% faster.
+
+If the validation loss becomes NaN or infinite, training stops with a message
+instead of running out its remaining epochs on a broken model.
 
 Outputs under --out: config.json, best.pt, last.pt, log.csv, preview_XXX.png.
 best.pt is chosen on the validation loss with ALL photos.
@@ -240,7 +245,8 @@ def main():
     ap.add_argument("--overfit", type=int, default=0)
     ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--device", default="auto")
-    ap.add_argument("--amp", action="store_true", help="mixed precision (CUDA only)")
+    ap.add_argument("--amp", action="store_true",
+                    help="mixed precision (CUDA only); diverged to NaN on this model once")
     ap.add_argument("--init-from", default=None,
                     help="v1 checkpoint (e.g. runs/v4_long/best.pt) to start the trunk from")
     ap.add_argument("--preview-every", type=int, default=10)
@@ -325,7 +331,7 @@ def main():
             + [f"val_{c}" for c in MAP_CHANNELS] + [f"val_{k}" for k in keys]
             + [f"valflash_{k}" for k in keys])
 
-    best = float("inf")
+    best, best_epoch = float("inf"), None
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         tr, _ = run_epoch(model, train_loader, device, criterion, args.photos,
@@ -351,9 +357,23 @@ def main():
                 + [f"{s:.6f}" for s in va["scalar_err"]]
                 + [f"{s:.6f}" for s in vf["scalar_err"]])
 
+        # A NaN/inf validation loss means the weights themselves are broken (a
+        # single bad TRAINING batch under --amp is normal: GradScaler skips
+        # that step). Nothing recovers from it, so stop now, not 150 epochs on.
+        if not (np.isfinite(va["loss"]) and np.isfinite(vf["loss"])):
+            print(f"epoch {epoch:3d}/{args.epochs}  train {tr['loss']:.4f}  "
+                  f"val all {va['loss']:.4f} flash {vf['loss']:.4f}", flush=True)
+            sys.exit(f"\nSTOPPED: the validation loss became NaN/inf in epoch {epoch}; "
+                     f"training cannot recover from that. "
+                     + (f"best.pt (epoch {best_epoch}) is from before it. "
+                        if best_epoch else "No usable checkpoint was saved. ")
+                     + ("This run used --amp, which has diverged on this model "
+                        "before: rerun without it (add --overwrite to reuse --out)."
+                        if args.amp else "Try a lower --lr, then report it."))
+
         flag = ""
         if va["loss"] < best:
-            best = va["loss"]
+            best, best_epoch = va["loss"], epoch
             torch.save({"model": model.state_dict(), "epoch": epoch,
                         "val_loss": va["loss"]}, os.path.join(args.out, "best.pt"))
             flag = "  <- best"

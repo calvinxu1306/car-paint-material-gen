@@ -475,8 +475,14 @@ point to the capture, not the training, for those.
 ## Not yet run
 
 - **Run 12** (v2, highest priority): `train_multi.py --photos flash+random`,
-  everything else as Run 11 (but with `--amp`); predictions under Runs 10 and
-  11. Then, depending on its outcome: if coat roughness recovers, add
+  everything else as Run 11; predictions under Runs 10 and 11. A first
+  attempt with `--amp` (16-bit maths) turned to NaN in epoch 2 — validation
+  loss 0.498 after epoch 1, NaN from then on, pigment accuracy stuck at 14% —
+  and was stopped; it was only ~10% faster (201–239 s per epoch against
+  Run 11's ~250 s). Rerun without it. The exact overflowing layer was not
+  found: a CPU test of the global track saw values of ~10, far below 16-bit's
+  limit of 65,504. `train_multi.py` now stops at the first NaN/inf
+  validation loss. Then, depending on its outcome: if coat roughness recovers, add
   `--coords` (pixel coordinates as input channels, as Deschaintre et al.
   2019); if it does not, `--flash-slot` (Finding 15, B; Boss et al. 2020
   keep the flash photo in its own pathway). Then Runs 13–14 from
