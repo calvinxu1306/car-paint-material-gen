@@ -523,8 +523,15 @@ point to the capture, not the training, for those.
     that Blender writes EXR scene-linear, without the view transform. The
     `dataset_multi.py` check reports how far the EXR photos go above 1 (a
     gloss paint's flash hotspot should) and whether each EXR lines up with
-    its PNG; if nothing goes above 1, stop and look at
-    `save_last_render_exr`.
+    its PNG; if nothing goes above 1 (it then says MISMATCH), stop and look
+    at `save_last_render_exr`. **Real paint:** an `--hdr-input` model needs
+    linear HDR photos at the renders' brightness scale, which ordinary
+    phone photos are not (8-bit, through the phone's tone curve,
+    auto-exposed; and the log encoding is not exposure-invariant). If HDR
+    input wins, the Phase 5 capture (`v2_plan.md` §6) must change to RAW
+    or bracketed-exposure HDR photos, calibrated to the renders' exposure,
+    before such a model is used on real paint; until then real phone
+    photos only fit a run trained on the PNGs.
 - **Held-out test sets** (highest priority for the report): 300 fresh samples
   per lighting condition at indices 2000+, scored with `--test-root`, so the
   reported numbers come from samples never used for training *or* for

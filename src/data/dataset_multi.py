@@ -345,7 +345,11 @@ def _corr(a: np.ndarray, b: np.ndarray) -> float:
 def hdr_check(root: str, n_samples: int = 4) -> bool:
     """For a folder rendered with --hdr: how bright the EXR photos get, and
     whether each EXR is the same picture as its PNG (same render, so their
-    brightness patterns must match pixel for pixel)."""
+    brightness patterns must match pixel for pixel). Fails if a gloss sample
+    was checked and nothing goes above 1: a gloss coat's flash hotspot, a
+    reflection of the 500 W flash, should be well above 1 in linear, so
+    the EXRs were probably written through the view transform (AgX), which
+    is the untested Blender assumption."""
     print("\nHDR photos (.exr, read with hdr=True):")
     try:
         ds = MultiLightDataset(root, split="all", hdr=True)
@@ -361,7 +365,16 @@ def hdr_check(root: str, n_samples: int = 4) -> bool:
               f"EXRs - some .exr files are missing")
     ok = True
     peak = 0.0
-    for index in ds.indices[:n_samples]:
+    checked = list(ds.indices[:n_samples])
+    finish = {i: ds.params(i).get("finish") for i in checked}
+    if "gloss" not in finish.values():
+        # The peak test below needs a gloss sample: add the first one, if any.
+        gloss = next((i for i in ds.indices[n_samples:]
+                      if ds.params(i).get("finish") == "gloss"), None)
+        if gloss is not None:
+            checked.append(gloss)
+            finish[gloss] = "gloss"
+    for index in checked:
         lin = np.stack([load_exr(os.path.join(root, f"{n}_{index:06d}.exr"))
                         for n in ds.photo_names])                  # (K, H, W, 3)
         png = np.stack([ds._png(n, index) for n in ds.photo_names])
@@ -379,17 +392,24 @@ def hdr_check(root: str, n_samples: int = 4) -> bool:
         r = _corr(y_enc, y_png)
         r_shift = _corr(y_enc, np.roll(y_png, 2, axis=-1))
         peak = max(peak, float(np.nanmax(lin)))
-        print(f"  {index:06d} linear max {np.nanmax(lin):7.2f}, above 1: "
-              f"{100 * (lin.max(-1) > 1).mean():5.2f}% of pixels | encoded "
+        print(f"  {index:06d} {finish[index] or '':<5} linear max {np.nanmax(lin):7.2f}, "
+              f"above 1: {100 * (lin.max(-1) > 1).mean():5.2f}% of pixels | encoded "
               f"{enc.min():.3f}..{enc.max():.3f} | EXR vs PNG r = {r:.3f} "
               f"(shifted 2 px: {r_shift:.3f})")
         if r < 0.5:
             ok = False
             print(f"  {index:06d} EXR and PNG don't look like the same picture  MISMATCH")
     if peak <= 1.0:
-        print("  WARNING: no pixel above 1 in these samples. A gloss paint's flash "
-              "hotspot should be; were the EXRs written through the view transform? "
-              "(see save_last_render_exr in generate_dataset_v5.py)")
+        n_gloss = sum(finish[i] == "gloss" for i in checked)
+        if n_gloss:
+            ok = False
+            print(f"  no pixel above 1, yet {n_gloss} of these samples are gloss, whose "
+                  "flash hotspot should be well above 1. Were the EXRs written through "
+                  "the view transform? See save_last_render_exr in "
+                  "generate_dataset_v5.py  MISMATCH")
+        else:
+            print("  WARNING: no pixel above 1, but the folder has no gloss sample to "
+                  "test this on (a gloss paint's flash hotspot should go above 1)")
     from torch.utils.data import DataLoader
     batch = next(iter(DataLoader(ds, batch_size=min(2, len(ds)))))
     print(f"  one HDR batch: photos {tuple(batch['photos'].shape)}, "
