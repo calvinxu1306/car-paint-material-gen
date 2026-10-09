@@ -27,6 +27,14 @@ without --test-root. They were never trained on, but did pick best.pt. With
 paint types as evenly as the data allows (12 samples of 5 types -> 3, 3, 2, 2,
 2) and over each type's samples, so a run always exports the same samples.
 
+The page tells viewers that none of the samples was used for training only
+when the script could check it ("held_out" in the manifest):
+  - with --test-root, it warns (as eval_multi.py does) when test indices also
+    exist in the training folder (same index = same seed = same paint), e.g.
+    when --test-root is the training folder itself;
+  - an --overfit run validates on its own training samples, so those are
+    exported, labelled as training samples.
+
 WHICH PHOTOS THE NETWORK SEES
 The ones the run trained to see: the flash photo alone for a --photos flash
 run; otherwise the flash photo first, then side photos up to the run's
@@ -103,13 +111,36 @@ def check_out(out: str) -> None:
                  f"writes demo/assets/samples). Refusing to delete {out}.")
 
 
+def indices_in(root: str) -> set[int] | None:
+    """The sample indices in a data folder, or None if it can't be read."""
+    try:
+        return set(MultiLightDataset(root, split="all").indices)
+    except (OSError, RuntimeError, ValueError) as err:
+        print(f"NOTE: can't read the training data {root} ({err}), so can't "
+              f"check that the test set is held out (pass --root to check).")
+        return None
+
+
 def samples_to_export(cfg: dict, root: str, test_root: str | None):
-    """The dataset to export from, its folder, and a description for the page.
+    """The dataset to export from, its folder, a description for the page, and
+    the indices in it that the run may have learned from (None: can't tell).
     Without --test-root: the validation split, as eval_multi.py builds it."""
     if test_root:
         ds = MultiLightDataset(test_root, split="all")
         folder, where = test_root, "held-out test set"
+        # As eval_multi.py: the same index in the training folder is the same
+        # seed, so the same paint. Catches a --test-root that IS the training
+        # folder, too.
+        trained = indices_in(root)
+        learned = None if trained is None else trained & set(ds.indices)
+        if learned:
+            print(f"WARNING: {len(learned)} test indices also exist in {root} "
+                  f"(same seed = same paint). The test set is not fully held out.")
+            where = "test set (overlaps the training data)"
+        elif learned is None:
+            where = "test set (not checked against the training data)"
     else:
+        overfit = cfg["args"].get("overfit")
         ds = MultiLightDataset(root, split="val")
         # The samples train_multi.py actually validated on, even if the folder
         # has grown since (the split is "last 10%", which would move).
@@ -117,9 +148,19 @@ def samples_to_export(cfg: dict, root: str, test_root: str | None):
         if saved is not None and saved != ds.indices:
             have = set(MultiLightDataset(root, split="all").indices)
             ds.indices = [i for i in saved if i in have]
-            print(f"NOTE: {root} changed since training; exporting from the "
-                  f"{len(ds.indices)} samples the run actually validated on.")
-        folder, where = root, "validation split (never trained on; it did pick best.pt)"
+            if not overfit:     # those differ from the split by design, below
+                print(f"NOTE: {root} changed since training; exporting from the "
+                      f"{len(ds.indices)} samples the run actually validated on.")
+        if overfit:
+            # train_multi.py --overfit validates on the samples it trains on.
+            print(f"WARNING: this is an --overfit run, which validates on its "
+                  f"{len(ds.indices)} training samples; exporting those, labelled "
+                  f"as training samples. Use --test-root for unseen samples.")
+            folder, where = root, "training samples (an --overfit run validates on them)"
+            learned = set(ds.indices)
+        else:
+            folder, where = root, "validation split (never trained on; it did pick best.pt)"
+            learned = set()
     if not ds.indices:
         sys.exit(f"no samples to export in {folder}")
 
@@ -134,7 +175,7 @@ def samples_to_export(cfg: dict, root: str, test_root: str | None):
                      f"{want}; the export would misread the model's outputs.")
     if ds.photo_names[0] != "photo":
         sys.exit(f"no flash photo ('photo') among {ds.photo_names} in {folder}")
-    return ds, folder, where
+    return ds, folder, where, learned
 
 
 def pick(ds: MultiLightDataset, pigments: list[str], n: int) -> list[int]:
@@ -182,7 +223,7 @@ def main():
     with open(os.path.join(args.run, "config.json")) as f:
         cfg = json.load(f)
     root = args.root or cfg["args"]["root"]
-    ds, folder, where = samples_to_export(cfg, root, args.test_root)
+    ds, folder, where, learned = samples_to_export(cfg, root, args.test_root)
     keys, pigments = cfg["scalar_keys"], cfg.get("pigments") or []
     ranges = {k: tuple(v) for k, v in cfg["scalar_ranges"].items()}
 
@@ -205,6 +246,10 @@ def main():
           f"photos={policy}; showing it {seen}")
 
     picks = pick(ds, pigments, args.n)
+    # Whether the page may say that none of these samples was used for
+    # training: null when that couldn't be checked.
+    picked = {ds.indices[pos] for pos in picks}
+    held_out = None if learned is None else not (learned & picked)
 
     # Stale samples from an older model mislead, so the folder is replaced
     # (checked above: only one this script wrote).
@@ -279,6 +324,7 @@ def main():
         "epoch": ckpt.get("epoch"),
         "dataset": rel(folder),
         "split": where,
+        "held_out": held_out,
         "photo_policy": policy,
         "photos": seen,                    # what the network was shown, in order
         "scalar_keys": keys,

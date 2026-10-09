@@ -14,20 +14,27 @@
 //                      iridescenceThicknessRange = [d, d] (d in nm);
 //                      iridescence 0 when the paint has no film.
 //                      APPROXIMATE: three.js takes the film's colour from
-//                      the viewing angle alone, as if the film faced air;
-//                      Blender uses the light-viewer half-vector, and in v5
-//                      the film lies under the clear coat
-//   coat tint       -> color = tint^2. AN APPROXIMATION: three.js has no
-//                      clear-coat tint. Light crosses the coat twice (in and
-//                      out), so the base colour is multiplied by tint^2.
-//                      Blender's tint also deepens towards grazing angles,
-//                      where the path through the coat is longer; this doesn't.
+//                      the viewing angle alone; Blender uses the light-viewer
+//                      half-vector
+//   coat tint       -> color = 1 - w + w * tint (w = coat weight). AN
+//                      APPROXIMATION: three.js has no clear-coat tint, so the
+//                      base colour is multiplied instead. Blender's Coat Tint
+//                      is the colour left after the trip in and out of the
+//                      coat at normal incidence (applied once, not squared),
+//                      and Coat Weight blends it in. Blender also deepens it
+//                      where the view grazes the coat, up to tint^1.34 at the
+//                      sphere's rim (coat IOR 1.5); this doesn't.
 // Blender and three.js both square roughness into the microfacet alpha, so
 // roughness values carry across unchanged (as in the v1 viewer, main.js).
 //
 // One directional light, placed relative to the camera so the sliders mean the
 // same thing however the view is turned, plus an optional dim RoomEnvironment.
 // With the light alone the scene is like the dark room of the training photos.
+// Elevation and azimuth follow the v5 generator's lights (params_*.json): the
+// camera looks straight at the swatch, elevation is the angle above the
+// swatch (90 = at the camera, the flash), azimuth 0 = from the right of the
+// photo, 90 = from the top. The middle of the sphere faces the camera as the
+// swatch did, so it sees a side light at the angles the photo had.
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -40,7 +47,7 @@ const SAMPLES = 'assets/samples_v2/';
 const FILM_MIN_NM = 50;
 const LIGHT_INTENSITY = 3.0;
 const ENV_INTENSITY = 0.25;      // "dim": the light should dominate
-const FLASH_LIKE = { elevation: 5, azimuth: 0 };
+const FLASH_LIKE = { elevation: 90, azimuth: 0 };
 
 const LABELS = {                 // label, decimals, unit
   coat_weight: ['Clear-coat weight', 2, ''],
@@ -68,8 +75,8 @@ const state = {
   index: 0,
   mode: 'pred',          // 'pred' | 'gt'
   repeat: 6,
-  elevation: 35,         // degrees above the view's horizon
-  azimuth: 45,           // degrees around the view; 0 = from the camera
+  elevation: 35,         // degrees above the surface facing the camera; 90 = at the camera
+  azimuth: 45,           // degrees around the view; 0 = from the right, 90 = from the top
   env: true,             // dim room on/off
   spin: !reducedMotion,
   phase: 'loading',      // 'loading' | 'ready' | 'empty' | 'error'
@@ -153,12 +160,23 @@ controls.update();
 
 // ---------------------------------------------------------------- light
 const lightDir = new THREE.Vector3();
+const toCam = new THREE.Vector3();
+const right = new THREE.Vector3();
+const up = new THREE.Vector3();
 function placeLight() {
-  // Camera space: +z points from the sphere to the viewer, +y up the screen.
+  // Axes at the sphere's centre, as in generate_dataset_v5.py with the camera
+  // on +z: z towards the camera, x to the right of the screen, y up it. From
+  // the centre rather than along the camera's axis (which aims a little
+  // below it), so elevation 90 is exactly at the camera, like the flash.
+  toCam.subVectors(camera.position, ball.position).normalize();
+  right.set(1, 0, 0).applyQuaternion(camera.quaternion);
+  up.crossVectors(toCam, right).normalize();
+  right.crossVectors(up, toCam);
   const el = THREE.MathUtils.degToRad(state.elevation);
   const az = THREE.MathUtils.degToRad(state.azimuth);
-  lightDir.set(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az))
-    .applyQuaternion(camera.quaternion);
+  lightDir.copy(toCam).multiplyScalar(Math.sin(el))
+    .addScaledVector(right, Math.cos(el) * Math.cos(az))
+    .addScaledVector(up, Math.cos(el) * Math.sin(az));
   light.position.copy(ball.position).addScaledVector(lightDir, 10);
 }
 
@@ -229,9 +247,10 @@ function applyMaterial() {
   paint.clearcoat = clamp01(num(v.coat_weight, 1));
   paint.clearcoatRoughness = clamp01(num(v.coat_roughness, 0.12));
 
-  // Candy: base colour x tint^2 (see the top of this file). Linear values.
-  const tint = TINT_KEYS.map((k) => clamp01(num(v[k], 1)));
-  paint.color.setRGB(tint[0] ** 2, tint[1] ** 2, tint[2] ** 2);
+  // Candy: the layers under the coat get 1 - w + w * tint, as in Blender
+  // (see the top of this file). Linear values.
+  const w = paint.clearcoat;
+  paint.color.setRGB(...TINT_KEYS.map((k) => 1 - w + w * clamp01(num(v[k], 1))));
 
   const film = filmOf(v, mode);
   paint.iridescence = film ? 1 : 0;
@@ -363,9 +382,16 @@ function buildFooter() {
     const name = location.pathname.split('/').filter(Boolean)[0];
     if (name) repo = ` · <a href="https://github.com/${user}/${name}">Code and write-up</a>`;
   }
+  // The exporter checks whether the network may have learned these samples;
+  // claim "held out" only when it could tell (null: it couldn't).
+  $('held-out').textContent = m.held_out === true
+    ? ' None of these samples was used for training.'
+    : m.held_out === false
+      ? ' Careful: these samples are not all held out from training, so they may flatter the network (see the bottom of the panel).'
+      : '';
   $('footer').innerHTML =
     `Checkpoint <code>${escapeHtml(m.checkpoint)}</code> (epoch ${escapeHtml(m.epoch ?? '?')}). ` +
-    `Samples from the ${escapeHtml(m.split || 'unknown split')} <code>${escapeHtml(m.dataset || '')}</code>. ` +
+    `Samples: ${escapeHtml(m.split || 'unknown split')}, <code>${escapeHtml(m.dataset || '')}</code>. ` +
     `Synthetic data rendered in Blender. <a href="./">Single-photo viewer (v1)</a>${repo}`;
 }
 

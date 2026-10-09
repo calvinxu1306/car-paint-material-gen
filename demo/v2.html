@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Car Paint from Several Photos</title>
-  <meta name="description" content="A neural network reads a flash photo and side-lit photos of car paint (solid, metallic, pearl, colour-shift or candy) and recovers its layers, including clear-coat tint and thin film. Held-out samples rendered live in three.js.">
+  <meta name="description" content="A neural network reads a flash photo and side-lit photos of car paint (solid, metallic, pearl, colour-shift or candy) and recovers its layers, including clear-coat tint and thin film. Samples rendered live in three.js.">
   <link rel="stylesheet" href="style.css">
   <script type="importmap">
   {
@@ -28,7 +28,7 @@
     <aside class="panel">
       <header>
         <h1>Car paint from several photos</h1>
-        <p class="lede">A network looks at photos of one paint swatch, taken by a camera that stays put while the light moves: the phone's flash, then lights from the side. It estimates every layer: the base coat, metallic flakes, the clear coat and its tint (candy paint), and the thin film that makes pearl and colour-shift paint change colour with angle. None of these samples was used for training.</p>
+        <p class="lede">A network looks at photos of one paint swatch, taken by a camera that stays put while the light moves: the phone's flash, then lights from the side. It estimates every layer: the base coat, metallic flakes, the clear coat and its tint (candy paint), and the thin film that makes pearl and colour-shift paint change colour with angle.<span id="held-out"></span></p>
       </header>
 
       <div class="block v2-empty" id="empty" hidden>
@@ -78,7 +78,7 @@
             <tbody id="base-rows"></tbody>
           </table>
           <p class="note">n/a: the parameter means nothing for this paint (flake size of a solid paint, film IOR without a film), so it was neither trained nor scored.</p>
-          <p class="note">How the sphere approximates Blender: the thin film uses three.js's iridescence (film IOR, one thickness), and a predicted film thinner than 50 nm is drawn as no film. three.js works out the film's colour from the viewing angle alone (Blender from the angle between light and viewer) and as if the film faced air rather than lay under the clear coat, so the colours are close to Blender's, not exact. three.js has no clear-coat tint, so a candy coat is drawn by multiplying the base colour by tint² (light crosses the coat twice); in Blender the tint also deepens towards grazing angles. Orange peel is not drawn.</p>
+          <p class="note">How the sphere approximates Blender: the thin film uses three.js's iridescence (film IOR, one thickness), and a predicted film thinner than 50 nm is drawn as no film. three.js works out the film's colour from the viewing angle alone (Blender from the angle between light and viewer), so the colours are close to Blender's, not exact. three.js has no clear-coat tint, so a candy coat is drawn by multiplying the base colour by 1 − w + w × tint (w = clear-coat weight), which is what Blender does at normal incidence; Blender also deepens the tint where you look at the coat at a grazing angle (the sphere's rim), and this doesn't. Orange peel is not drawn.</p>
         </div>
       </div>
 
@@ -90,7 +90,7 @@
         </label>
         <label class="slider">
           <span class="v2-slider-head">Azimuth <output id="azim-val" for="azim"></output></span>
-          <input type="range" id="azim" min="-180" max="180" step="5" value="45">
+          <input type="range" id="azim" min="0" max="355" step="5" value="45">
         </label>
         <div class="v2-light-row">
           <div class="seg" role="group" aria-label="Surroundings">
@@ -99,7 +99,7 @@
           </div>
           <button type="button" class="v2-btn" id="flash-btn">Light at the camera</button>
         </div>
-        <p class="note">One light, placed relative to your view: elevation 5° and azimuth 0° put it next to the camera, like the phone's flash. Swing it round to see pearl and colour-shift paints change colour. "Light only" is the dark room of the training photos, where the clear coat has nothing but the light to reflect.</p>
+        <p class="note">One light, placed relative to your view and measured like the lights of the training photos: elevation is the angle above the surface facing you, so 90° puts it at the camera like the phone's flash (the side lights were 20–65°); azimuth goes round the view, 0° from the right, 90° from the top. The middle of the sphere faces you as the swatch faced the camera. Lower the light to see pearl and colour-shift paints change colour. "Light only" is the dark room of the training photos, where the clear coat has nothing but the light to reflect.</p>
       </div>
 
       <div class="block" id="samples-block" hidden>

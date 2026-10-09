@@ -256,7 +256,11 @@ photo alone for `--photos flash`, otherwise the flash photo and side photos
 up to `--max-photos`. Output goes to `demo/assets/samples_v2/`, which is
 replaced on every export; the script refuses to delete a folder it did not
 write (including v1's `demo/assets/samples/`). Without exported samples the
-page says so and shows the command.
+page says so and shows the command. The page says that none of the samples
+was used for training only when the script could check it: with
+`--test-root` it warns, as `eval_multi.py` does, when test indices also exist
+in the training folder (same index = same paint), and an `--overfit` run,
+which validates on its training samples, is exported labelled as such.
 
 `index.html` does not link to `v2.html` yet: GitHub Pages would publish the
 link before any samples exist. Commit `demo/assets/samples_v2/` first, then
@@ -272,19 +276,27 @@ How the sphere maps the parameters, and what is approximated:
   as no film (the network can't output exactly 0; the thinnest real film in
   v5 is 100 nm). Approximate: three.js works out the film's colour from the
   viewing angle alone (Blender from the angle between light and viewer, via
-  the half-vector; the two agree in a sharp highlight on the sphere) and as if
-  the film faced air, while in v5 it lies under the clear coat. Colours are
-  close, not exact.
+  the half-vector; the two agree in a sharp highlight on the sphere). Both
+  put air (IOR 1) outside the film, under the coat too. Colours are close,
+  not exact.
 - **Candy coat tint:** three.js has no clear-coat tint, so the base colour is
-  multiplied by tint² (light crosses the coat twice). Blender's tint also
-  deepens towards grazing angles, where the path through the coat is longer;
-  the page doesn't show that.
+  multiplied by 1 − w + w·tint (w = coat weight). That is Blender's own rule
+  at normal incidence: its Coat Tint is the colour left after the trip in and
+  out of the coat (applied once, not squared), and Coat Weight blends it in
+  (Cycles' `bsdf_coat_setup`). Blender also deepens the tint where the *view*
+  grazes the coat, up to tint^1.34 at the sphere's rim (coat IOR 1.5); the
+  page doesn't show that.
 - **Not drawn:** orange peel (one number, no map), and flake *size* (the
   "Flake size on object" slider sets it, as in v1).
-- **Lighting:** one directional light, placed relative to the view
-  (elevation 5–90°, azimuth all round; 5° and 0° is the flash position), plus
-  an optional dim `RoomEnvironment`. "Light only" is closest to the dark-room
-  training photos. AgX tone mapping, as in the v5 photos.
+- **Lighting:** one directional light, placed relative to the view and
+  measured like v5's lights (`lights` in `params_*.json`, camera looking
+  straight at the swatch): elevation 5–90° above the surface facing the
+  camera, 90° = at the camera (the flash; the side lights are 20–65°), and
+  azimuth 0–355° round the view, 0° = from the right of the photo, 90° = from
+  the top. The middle of the sphere faces the camera as the swatch did, so it
+  sees a side photo's light at that photo's angles. Plus an optional dim
+  `RoomEnvironment`. "Light only" is closest to the dark-room training
+  photos. AgX tone mapping, as in the v5 photos.
 
 Still to do: glTF export via `KHR_materials_iridescence`.
 
