@@ -472,21 +472,85 @@ point to the capture, not the training, for those.
 
 ---
 
+## Run 12 — v5 data, the flash photo in every training sample
+
+`runs/v5_flashplus`: identical to Run 11 except `--photos flash+random` —
+the flash photo in every sample, plus a random 0–5 side photos (the same
+1–6 photo-count spread). Full precision; best epoch 123 of 150. A first
+attempt with `--amp` (16-bit maths) turned to NaN in epoch 2 — validation
+loss 0.498 after epoch 1, NaN from then on, pigment accuracy stuck at 14% —
+and was stopped; it was only ~10% faster (201–239 s per epoch against Run
+11's ~250 s). The overflowing layer was not found (a CPU test of the global
+track saw values of ~10, far below 16-bit's limit of 65,504);
+`train_multi.py` now stops at the first NaN/inf validation loss. Scored on
+`dataset_v5_test` (400 samples), like Runs 10–11.
+
+| photos shown | maps | coat wt | coat rgh | flk size | flk str | film d | film n | pigment acc. |
+|---|---|---|---|---|---|---|---|---|
+| Run 10, flash (flash-only model) | 64.8% | 3.1% | **62.5%** | 79.3% | 81.1% | 77.1% | 8.1% | 86% |
+| Run 11, flash | 54.5% | 2.5% | 16.4% | 45.6% | 40.3% | 45.9% | −3.0% | 69% |
+| Run 11, all 6 | 61.6% | 3.6% | 17.4% | 60.2% | 86.7% | 78.7% | 6.4% | 83% |
+| **Run 12, flash** | 62.4% | 3.3% | 18.2% | 76.7% | 81.4% | 72.9% | 7.3% | 84% |
+| **Run 12, flash+side1** | 63.0% | 3.7% | 19.7% | 77.9% | 86.7% | 76.6% | 6.1% | 85% |
+| **Run 12, flash+3 sides** | 63.2% | 3.9% | 20.4% | 78.2% | 87.6% | 77.5% | 6.1% | 86% |
+| **Run 12, all 6** | 63.4% | 3.7% | 20.2% | 78.3% | **87.9%** | 77.9% | 5.5% | 86% |
+
+Peel stays at −2.3 to −2.4% and coat tint at 32–35% overall (−163 to
+−184% within candy) in every row, as in Runs 10–11. Real-unit errors, flash |
+all 6: coat roughness 0.099 | 0.097, flake size 4.5 | 4.1, flake strength
+0.019 | 0.012, film thickness 43 | 35 nm.
+
+Against the predictions written before the run (under Runs 10 and 11):
+coat roughness from the flash ≥ 50% — **18.2%, failed**; flake size ≥ 70% —
+76.7%, held; flake strength ≥ 75% — 81.4%, held; flake strength with all six
+≥ 85% — 87.9%, held; colour-shift identified with all six ≥ 50 of 54 — 49 of
+54, missed by one.
+
+**Finding 16 — always including the flash photo fixed everything except
+coat roughness.** Run 12 reads the flash photo almost as well as the
+flash-only model on the maps (62.4 vs. 64.8%), flake size (76.7 vs. 79.3%),
+flake strength (81.4 vs. 81.1%) and paint type (84 vs. 86%), where Run 11
+scored 40–55% on the maps and flakes from the same photo (69% on paint type). Side photos still add to flake strength
+(81 → 88%, the best of any run) and a little elsewhere. So for those
+quantities, Finding 15's explanation A holds: Run 11 was held back by
+training without the flash photo. Not for coat roughness: 18.2% from the
+flash and 20.2% with all six, against 62.5% for Run 10, and 13–30% within
+each paint type against Run 10's 41–67%. Shown the flash photo alone, Run
+12 is the same network as Run 10 seeing the same single photo — no pooling
+across photos takes place — so its training on mixed photo sets, not the
+input, cost the coat roughness. A plausible reason it is coat roughness that
+suffers: the coat highlight is the one feature whose look depends on where
+the light is (centred and tight under the flash; off-centre in roughly half
+of the side photos; absent in the rest), while glints look alike under any
+light. The same features then have to encode roughness from very different
+highlights, and max/mean pooling merges them, so the layer-parameter head
+learns a compromise. Deschaintre et al. 2019 also found roughness the one
+quantity their pooled network could not improve with more photos.
+Explanation B (pooling hides which photo is the flash) is what Run 13
+tests. Coat weight (except candy), peel, film IOR and candy's tint stay
+near 0%, as predicted.
+
+**Run 13 (next, predictions written before running):** `--photos
+flash+random --flash-slot` (`runs/v5_flashslot`), everything else as Run
+12: the flash photo's features and global vector get their own slot next
+to the max and mean over all photos. If B holds, coat roughness from the
+flash reaches ≥ 50% skill (error ≤ ~0.06), and flake size (≥ 70%), flake
+strength (flash ≥ 75%, all six ≥ 85%) and the maps stay at Run 12's level.
+If coat roughness from the flash stays below ~25%, B is ruled out too, and
+the next suspect is the layer-parameter head and its loss (for example how
+coat roughness is weighted against the other nine targets).
+
+---
+
 ## Not yet run
 
-- **Run 12** (v2, highest priority): `train_multi.py --photos flash+random`,
-  everything else as Run 11; predictions under Runs 10 and 11. A first
-  attempt with `--amp` (16-bit maths) turned to NaN in epoch 2 — validation
-  loss 0.498 after epoch 1, NaN from then on, pigment accuracy stuck at 14% —
-  and was stopped; it was only ~10% faster (201–239 s per epoch against
-  Run 11's ~250 s). Rerun without it. The exact overflowing layer was not
-  found: a CPU test of the global track saw values of ~10, far below 16-bit's
-  limit of 65,504. `train_multi.py` now stops at the first NaN/inf
-  validation loss. Then, depending on its outcome: if coat roughness recovers, add
+- **Run 13** (v2, highest priority, running): `train_multi.py --photos
+  flash+random --flash-slot`, everything else as Run 12; predictions under
+  Run 12. Then, depending on its outcome: if coat roughness recovers, add
   `--coords` (pixel coordinates as input channels, as Deschaintre et al.
-  2019); if it does not, `--flash-slot` (Finding 15, B; Boss et al. 2020
-  keep the flash photo in its own pathway). Then Runs 13–14 from
-  `v2_plan.md` §4 (v1 initialisation; v1 code on v5 flash photos).
+  2019) as Run 14; if it does not, look at the layer-parameter head and its
+  loss. Then Runs 15–16 from `v2_plan.md` §4 (v1 initialisation; v1 code on
+  v5 flash photos).
 - v2 capture changes suggested by the literature (`reading_notes_v2.md`;
   each needs a re-render): HDR photos fed in log space, for `coat_weight`
   (Kaltheuner et al. 2021); fixed side-light slots instead of five random
