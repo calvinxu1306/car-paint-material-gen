@@ -14,7 +14,8 @@ several times, each time shown a different set of photos:
 
 Only sets the run could have seen in training are scored: a --photos flash
 run gets the flash set alone, and a --photos flash+random run (which always
-had the flash photo) gets no side1 row.
+had the flash photo) gets no side1 row - nor does a --flash-slot model, which
+needs the flash photo first.
 
 For every set it reports SKILL (as eval_baseline.py: how much of the
 do-nothing baseline's error the model removes; 0% = learned nothing) for the
@@ -82,12 +83,11 @@ def pick_device(requested: str) -> torch.device:
 
 
 def photo_sets(names: list[str], max_photos: int,
-               policy: str = "random") -> dict[str, list[int]]:
+               require_flash: bool = False) -> dict[str, list[int]]:
     """Named photo subsets, as indices into the dataset's photo list. No set is
     larger than max_photos: the network never trained on more photos than
-    that, and max-pooled features keep growing with the photo count. Runs
-    trained with the flash photo in every sample (policy flash or
-    flash+random) only get sets that contain it."""
+    that, and max-pooled features keep growing with the photo count. With
+    require_flash, only sets that contain the flash photo (always first)."""
     if "photo" not in names:
         raise SystemExit(f"no flash photo ('photo') among {names}")
     flash = names.index("photo")
@@ -102,7 +102,7 @@ def photo_sets(names: list[str], max_photos: int,
     n_all = min(max_photos, len(names))
     if n_all > 4:
         sets[f"all {n_all}"] = [flash] + sides[:n_all - 1]
-    if policy in ("flash", "flash+random"):
+    if require_flash:
         sets = {name: idx for name, idx in sets.items() if flash in idx}
     return sets
 
@@ -264,7 +264,11 @@ def main():
     # Baselines only need targets, so load just one photo per training sample.
     map_mean, s_mean, ps_mean = training_means(
         MultiLightDataset(root, split="train", photos=["photo"]), n_pig)
-    sets = photo_sets(eval_ds.photo_names, max_photos, policy)
+    # Runs that always had the flash photo, and flash-slot models (which read
+    # photos[:, 0] as the flash photo), are only scored on sets that contain it.
+    require_flash = (policy in ("flash", "flash+random")
+                     or cfg["model_cfg"].get("flash_slot", False))
+    sets = photo_sets(eval_ds.photo_names, max_photos, require_flash)
     results = {}
     accs = score_all(model, eval_ds, sets, device, map_mean, s_mean, ps_mean,
                      n_pig, args.batch_size)

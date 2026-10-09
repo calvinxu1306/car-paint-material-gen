@@ -34,6 +34,11 @@ WHICH PHOTOS THE NETWORK SEES (--photos)
             out of ~42% of samples. Run 12 in ablations.md compares the two.
     all     the first --max-photos photos (flash first), every time
 
+MODEL OPTIONS (off by default; see MultiLightPaintNet in model.py)
+    --coords       pixel x/y as two extra input channels per photo
+    --flash-slot   the flash photo gets its own slot next to the max/mean
+                   pooling; needs --photos flash+random, all or flash
+
 FIRST: the overfit test (should drive the loss towards 0)
     python src/train_multi.py --root data/blender_gen/dataset_v5 \
         --out runs/v5_overfit --overfit 4 --epochs 200 --schedule constant
@@ -225,6 +230,10 @@ def main():
     ap.add_argument("--schedule", choices=["constant", "cosine"], default="cosine")
     ap.add_argument("--photos", choices=["random", "flash", "flash+random", "all"],
                     default="random")
+    ap.add_argument("--coords", action="store_true",
+                    help="pixel coordinates as two extra input channels")
+    ap.add_argument("--flash-slot", action="store_true",
+                    help="give the flash photo its own slot in the pooling")
     ap.add_argument("--max-photos", type=int, default=None,
                     help="most photos per sample (default: all the dataset has)")
     ap.add_argument("--limit", type=int, default=None)
@@ -241,6 +250,9 @@ def main():
     ap.add_argument("--pigment-weight", type=float, default=0.2)
     args = ap.parse_args()
 
+    if args.flash_slot and args.photos == "random":
+        sys.exit("--flash-slot needs the flash photo first in every sample; "
+                 "--photos random can leave it out. Use --photos flash+random.")
     if args.out is None:
         args.out = os.path.join("runs", time.strftime("run_%Y%m%d_%H%M%S"))
     if os.path.exists(os.path.join(args.out, "log.csv")) and not args.overwrite:
@@ -275,7 +287,8 @@ def main():
 
     meta_path = os.path.join(args.root, "meta.json")
     model_cfg = dict(n_scalars=len(keys), n_pigments=max(len(train_ds.pigments), 1),
-                     prenorm_global=True)
+                     prenorm_global=True, coords=args.coords,
+                     flash_slot=args.flash_slot)
     with open(os.path.join(args.out, "config.json"), "w") as f:
         json.dump({"args": vars(args), "model": "MultiLightPaintNet",
                    "model_cfg": model_cfg, "scalar_keys": keys,

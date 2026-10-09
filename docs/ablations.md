@@ -454,7 +454,9 @@ input. Two explanations, not yet separated:
   flash photo's evidence is mixed with up to five side photos', in
   proportions that change every batch, and nothing marks which photo is the
   flash. Giving the flash photo its own slot in the pooled vector would test
-  this.
+  this (`train_multi.py --flash-slot`, added 2026-10-09). Deschaintre et al.
+  2019 report the same symptom — roughness "independent of the number of
+  images" — for their max-pooled network (`reading_notes_v2.md` §4).
 
 **Run 12 (next, predictions written before running):** `--photos
 flash+random` — the flash photo in every sample plus a random 0–5 side
@@ -473,9 +475,17 @@ point to the capture, not the training, for those.
 ## Not yet run
 
 - **Run 12** (v2, highest priority): `train_multi.py --photos flash+random`,
-  everything else as Run 11; predictions under Runs 10 and 11. Then, depending
-  on its outcome, a flash slot in the pooling (Finding 15, B), and Runs 13–14
-  from `v2_plan.md` §4 (v1 initialisation; v1 code on v5 flash photos).
+  everything else as Run 11 (but with `--amp`); predictions under Runs 10 and
+  11. Then, depending on its outcome: if coat roughness recovers, add
+  `--coords` (pixel coordinates as input channels, as Deschaintre et al.
+  2019); if it does not, `--flash-slot` (Finding 15, B; Boss et al. 2020
+  keep the flash photo in its own pathway). Then Runs 13–14 from
+  `v2_plan.md` §4 (v1 initialisation; v1 code on v5 flash photos).
+- v2 capture changes suggested by the literature (`reading_notes_v2.md`;
+  each needs a re-render): HDR photos fed in log space, for `coat_weight`
+  (Kaltheuner et al. 2021); fixed side-light slots instead of five random
+  lights (same paper); one photo reflecting stripes, for `peel_strength`
+  (how industry measures orange peel).
 - **Held-out test sets** (highest priority for the report): 300 fresh samples
   per lighting condition at indices 2000+, scored with `--test-root`, so the
   reported numbers come from samples never used for training *or* for
