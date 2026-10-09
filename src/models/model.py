@@ -210,18 +210,35 @@ class MultiLightPaintNet(nn.Module):
     With K = 1, max = mean = that photo's features, so this is v1's network
     plus a slightly wider head - and v1 checkpoints can initialise the trunk
     (see load_trunk_from).
+
+    TWO OPTIONS (off by default; recorded in config.json):
+    coords      every photo gets two extra input channels, the pixel's x and y
+                in -1..1 (Deschaintre et al. 2019 do this). Convolutions
+                can't tell where in the picture they are, and here position
+                matters: the flash hotspot sits at the centre, a side light's
+                coat highlight wherever that light puts it.
+    flash_slot  photos[:, 0] must be the flash photo. Its features and global
+                vector get their own slot next to the max and mean over all
+                photos, so the network always knows what the flash photo saw
+                (Boss et al. 2020 keep the flash photo in its own pathway for
+                the same reason). Order still doesn't matter among the side
+                photos. Needs a photo policy that always includes the flash.
     """
 
     def __init__(self, out_ch: int = 8, n_scalars: int = 10, n_pigments: int = 5,
                  base: int = 32, depth: int = 5, c_global: int = 128,
-                 prenorm_global: bool = True):
+                 prenorm_global: bool = True, coords: bool = False,
+                 flash_slot: bool = False):
         super().__init__()
+        self.coords = coords
+        self.flash_slot = flash_slot
+        n_pool = 3 if flash_slot else 2      # max, mean (, flash photo)
         # prenorm_global ON here (see CarPaintNet): without it every photo is
         # normalised on its own, so the network cannot compare how bright the
         # flash photo is with the side-lit ones - a direct cue for the coat.
-        self.trunk = CarPaintNet(out_ch=out_ch, n_scalars=0, base=base,
-                                 depth=depth, c_global=c_global,
-                                 prenorm_global=prenorm_global)
+        self.trunk = CarPaintNet(in_ch=5 if coords else 3, out_ch=out_ch,
+                                 n_scalars=0, base=base, depth=depth,
+                                 c_global=c_global, prenorm_global=prenorm_global)
         del self.trunk.head          # the trunk's own map head isn't used
         c = base                     # channels of the trunk's final features
         # NO InstanceNorm here. InstanceNorm subtracts each image's own mean
@@ -233,13 +250,13 @@ class MultiLightPaintNet(nn.Module):
         # the mean-pooled features (with one photo this is v1's head input),
         # and the pooled global vector added back as a per-channel bias.
         self.fuse = nn.Sequential(
-            nn.Conv2d(2 * c, c, 3, padding=1), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(n_pool * c, c, 3, padding=1), nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(c, c, 3, padding=1), nn.LeakyReLU(0.2, inplace=True))
-        self.fuse_global = nn.Linear(2 * c_global, c)
+        self.fuse_global = nn.Linear(n_pool * c_global, c)
         self.head = nn.Conv2d(c, out_ch, 1)
 
         def mlp(n_out):
-            return nn.Sequential(nn.Linear(2 * c_global, 128), nn.SELU(inplace=True),
+            return nn.Sequential(nn.Linear(n_pool * c_global, 128), nn.SELU(inplace=True),
                                  nn.Linear(128, 64), nn.SELU(inplace=True),
                                  nn.Linear(64, n_out))
         self.scalar_head = mlp(n_scalars) if n_scalars else None
@@ -249,13 +266,24 @@ class MultiLightPaintNet(nn.Module):
         if photos.dim() == 4:                 # a single photo per sample
             photos = photos[:, None]
         b, k = photos.shape[:2]
-        feat, g = self.trunk.features(photos.flatten(0, 1))   # (B*K, C, H, W)
+        x = photos.flatten(0, 1)                              # (B*K, 3, H, W)
+        if self.coords:
+            h, w = x.shape[-2:]
+            ys = torch.linspace(-1, 1, h, device=x.device, dtype=x.dtype)
+            xs = torch.linspace(-1, 1, w, device=x.device, dtype=x.dtype)
+            gy, gx = torch.meshgrid(ys, xs, indexing="ij")
+            x = torch.cat([x, torch.stack([gx, gy]).expand(x.shape[0], -1, -1, -1)], 1)
+        feat, g = self.trunk.features(x)                      # (B*K, C, H, W)
         feat = feat.unflatten(0, (b, k))
         g = g.unflatten(0, (b, k))
 
         f_mean = feat.mean(dim=1)
-        pooled = torch.cat([feat.amax(dim=1), f_mean], dim=1)
-        g_pooled = torch.cat([g.amax(dim=1), g.mean(dim=1)], dim=1)
+        pooled = [feat.amax(dim=1), f_mean]
+        g_pooled = [g.amax(dim=1), g.mean(dim=1)]
+        if self.flash_slot:                  # photos[:, 0] is the flash photo
+            pooled.append(feat[:, 0])
+            g_pooled.append(g[:, 0])
+        pooled, g_pooled = torch.cat(pooled, dim=1), torch.cat(g_pooled, dim=1)
 
         x = (f_mean + self.fuse(pooled)
              + self.fuse_global(g_pooled)[:, :, None, None])
@@ -274,6 +302,15 @@ class MultiLightPaintNet(nn.Module):
         own = self.trunk.state_dict()
         copied = {k: v for k, v in state.items()
                   if k in own and own[k].shape == v.shape}
+        first = "enc.0.0.weight"                 # the first convolution
+        if (self.coords and first in state and first in own
+                and own[first].shape[1] == state[first].shape[1] + 2
+                and own[first].shape[2:] == state[first].shape[2:]):
+            # v1 saw RGB only: copy its RGB weights and start the two
+            # coordinate channels at zero, so the trunk starts out as v1's.
+            w = torch.zeros_like(own[first])
+            w[:, :state[first].shape[1]] = state[first]
+            copied[first] = w
         if len(copied) < len(own):
             missing = sorted(set(own) - set(copied))
             raise ValueError(
@@ -356,5 +393,36 @@ if __name__ == "__main__":
         n = multi.load_trunk_from(path)
         print(f"copied {n} tensors from a v1 checkpoint into the trunk")
         assert n > 0
+
+    # The two options: coordinate channels and a flash slot.
+    for opts in ({"coords": True}, {"flash_slot": True},
+                 {"coords": True, "flash_slot": True}):
+        m = MultiLightPaintNet(**opts).eval()
+        with torch.no_grad():
+            a = m(photos)
+            assert a["maps"].shape == (2, 8, 128, 128) and a["scalars"].shape == (2, 10)
+            m(torch.rand(1, 1, 3, 64, 64))                    # flash photo alone
+            if opts.get("flash_slot"):
+                # Side photos (1..K-1) are interchangeable; the flash photo is not.
+                b = m(photos[:, [0, 3, 1, 2]])["scalars"]
+                c = m(photos[:, [1, 0, 2, 3]])["scalars"]
+                assert (a["scalars"] - b).abs().max() < 1e-4, "side-photo order matters"
+                assert (a["scalars"] - c).abs().max() > 1e-6, "flash slot has no effect"
+        print(f"options {opts}: OK" + (" - side photos interchangeable, flash photo "
+                                         "is not" if opts.get("flash_slot") else ""))
+    # A v1 checkpoint loads into the coords model: RGB weights copied, the two
+    # coordinate channels zero, every other trunk tensor as in the plain model.
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "v1.pt")
+        torch.save({"model": net.state_dict()}, path)
+        plain, withc = MultiLightPaintNet(), MultiLightPaintNet(coords=True)
+        plain.load_trunk_from(path)
+        withc.load_trunk_from(path)
+        w = withc.trunk.enc[0][0].weight
+        assert torch.equal(w[:, :3], net.enc[0][0].weight) and not w[:, 3:].any()
+        sp, sc = plain.trunk.state_dict(), withc.trunk.state_dict()
+        assert all(torch.equal(sp[k], sc[k]) for k in sp if k != "enc.0.0.weight")
+        print("v1 checkpoint -> coords trunk: RGB weights copied, coordinate "
+              "weights start at zero")
 
     print("\nRESULT: model looks correct.")

@@ -4,7 +4,9 @@ Companion to `reading_notes.md` (v1) and `v2_plan.md`. Grouped by the decision
 each source supports. Every link was opened while compiling this list
 (2026-10-07); the three that carry the most weight in the novelty argument
 (Kaltheuner 2021, Guo 2020, Guo 2018) were checked a second time against
-their own abstract or PDF.
+their own abstract or PDF. Deschaintre 2019, Kaltheuner 2021 and Boss 2020
+were read in full on 2026-10-09, after Runs 10–11; their entries below say
+what each means for the open problems in `ablations.md` (Findings 12–15).
 
 ASTM standards are cited from their public scope pages only (ASTM's store
 terms prohibit AI use of the standards themselves).
@@ -40,6 +42,20 @@ terms prohibit AI use of the standards themselves).
   A compact angular parameterisation needs far fewer images than a full
   BTF; supports a few-photo capture.
 
+- **How industry measures orange peel: the distortion of a reflected
+  pattern.** Pattern projection imaged by a 2D sensor
+  ([Konica Minolta](https://sensing.konicaminolta.asia/wp-content/uploads/2022/09/Image-Clarity-Orange-Peel-and-Surface-Roughness-Measurement.pdf)),
+  the waviness of a reflected light stripe
+  ([Perceptron, Photonics.com](https://photonics.com/Article.aspx?AID=23155)),
+  laser wave-scan with 1,250 points over 10 cm
+  ([BYK, PCI Magazine](https://pcimag.com/articles/83827-controlling-orange-peel-s-impact-on-today-s-brilliant-auto-finishes)),
+  or a scanned beam's specular reflection
+  ([US5153445A](https://patents.google.com/patent/US5153445A/en)). A dark
+  room lit by point lights gives the coat no pattern to distort, which fits
+  `peel_strength` at ~0% in every run (Findings 5, 14). One photo of the
+  sample reflecting stripes (a striped emissive plane in Blender; a phone
+  screen in a real capture) should make it observable.
+
 ## 2. The paint model (what the generator renders)
 
 - **Günther et al. 2005**, *Efficient Acquisition and Realistic Rendering of
@@ -72,6 +88,18 @@ terms prohibit AI use of the standards themselves).
   [arXiv](https://arxiv.org/abs/2512.23696v1). Industry uber-shader: base,
   thin film, coat with absorption (tint), fuzz. No flake layer — the flakes
   stay this project's own procedural part.
+- **Blender manual, Principled BSDF** (4.2) —
+  [docs](https://docs.blender.org/manual/en/4.2/render/shader_nodes/shader/principled.html).
+  Coat Tint is absorption inside the coat: "saturation increases at shallower
+  angles", depending on the coat IOR. Coat Weight scales both the coat's
+  reflection *and* its tint (weight 0 removes the tint too), which is why
+  `coat_weight` is learnable for candy only (Finding 13). Worked out for v5
+  (coat IOR left at the default 1.5, camera overhead): refraction bends the
+  light towards the normal, so the path through the coat is 2.00 coat
+  thicknesses for the flash and only 2.04–2.28 for the side lights (65° to
+  20° above the surface; 2.34 at grazing). The tint deepens by at most ~14%
+  across a sample's photos, so candy vs. a coloured metallic base is close
+  to ambiguous in this capture.
 - **Sung et al. 2002**, *Optical Reflectance of Metallic Coatings: Effect of
   Aluminum Flake Orientation* — [paint.org](https://www.paint.org/ct-archives/optical-reflectance-of-metallic-coatings-effect-of-aluminum-flake-orientation/jctsept02-sung).
   Measured flake tilts have heavier tails than a Gaussian; a candidate change
@@ -101,11 +129,40 @@ terms prohibit AI use of the standards themselves).
   Deep Network*, EGSR — [arXiv](https://arxiv.org/abs/1906.11557),
   [project](https://team.inria.fr/graphdeco/projects/multi-materials/).
   Shared per-image network, order-independent pooling, any number of photos.
-  The template for `MultiLightPaintNet`.
+  The template for `MultiLightPaintNet`. *Read in full (2026-10-09):* each
+  photo runs through its own copy of the single-image network (U-Net +
+  global track); the 256×256×64 feature maps are fused by a per-pixel,
+  per-channel **max** (the global vectors too), then decoded by 3 conv
+  layers. Trained with 1–5 photos, tested with 1–10, lights uncalibrated
+  ("we do not provide the network with any explicit knowledge of the light
+  and view position"). Two points for this project: (1) "the quality of the
+  roughness prediction seems on average independent of the number of
+  images, suggesting that the method struggles to exploit additional
+  information for this quantity" — the same pattern as Run 11's coat
+  roughness (16–18% for every photo set), so a known weakness of pooled
+  multi-image networks, not only a bug here; (2) they "provide pixel
+  coordinates as extra channels to the input to help the convolutional
+  network reason about spatial information", which v2 did not —
+  `train_multi.py --coords` adds them. Loss: rendering loss plus L1 on each
+  map.
 - **Kaltheuner, Bode, Klein 2021**, *Capturing Anisotropic SVBRDFs*, VMV —
   [PDF](https://diglib7.eg.org/bitstream/handle/10.2312/vmv20211372/063-070.pdf).
   U-Net **with a global feature track**, max-pooled over a variable number
   of images — the closest published architecture to this project's.
+  *Read in full (2026-10-09):* the capture is **designed, not random**: "not
+  all features are visible under every input view- and
+  light-configuration", so training uses five photos in fixed roles (one
+  Fresnel configuration, two for anisotropy, two random). For v5 that
+  suggests fixed side-light slots (e.g. one light high enough to put the
+  coat reflection in frame, one raking light for tint and film) instead of
+  five random ones, which would also tell the network which photo is which.
+  Their input photos are HDR, mapped to log space, `(log(x + 0.01) −
+  log 0.01) / (log 1.01 − log 0.01)`, where v5 feeds 8-bit AgX-tone-mapped
+  PNGs that compress or clip the coat highlight's peak; `coat_weight` mostly
+  changes that peak's height, so HDR input is a candidate fix for it. They
+  then fine-tune the decoder per material with a rendering loss under the
+  known configurations, which needs a renderer for every layer (v2 has none
+  for coat, flakes and film).
 - **Zaheer et al. 2017**, *Deep Sets* — [arXiv](https://arxiv.org/abs/1703.06114).
   Why max/mean pooling makes the output independent of photo order and lets
   one network take any number of photos (max-pooled features still grow with
@@ -114,7 +171,15 @@ terms prohibit AI use of the standards themselves).
   Attention pooling: the upgrade path from max/mean pooling.
 - **Boss et al. 2020**, *Two-shot SVBRDF and Shape Estimation*, CVPR —
   [arXiv](https://arxiv.org/abs/2004.00403). Flash + no-flash pair from a
-  phone; the lightest multi-image capture.
+  phone; the lightest multi-image capture. *Read in full (2026-10-09):* the
+  two photos are **not** pooled symmetrically. "Merge convolution" blocks (4
+  in the encoder, 4 in the decoder) give each photo its own pathway and
+  exchange information through a third, "to keep the features from each of
+  the images intact"; the no-flash photo supplies pixels where the flash
+  photo is saturated. The precedent for treating the flash photo specially —
+  `train_multi.py --flash-slot` is the lightweight version: the flash
+  photo's features and global vector get their own slot next to the max and
+  mean over all photos.
 - **Gao et al. 2019**, *Deep Inverse Rendering for High-resolution SVBRDF
   Estimation from an Arbitrary Number of Images*, TOG —
   [NSF PAR](https://par.nsf.gov/biblio/10167644). Optimisation-based
