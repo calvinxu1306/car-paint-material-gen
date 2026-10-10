@@ -156,11 +156,12 @@ flash+side1 / flash+3 sides / all). Predictions, from the physics above:
 | flake size / strength, coat roughness | as v1 (70–90%) | similar or slightly higher |
 | pigment: pearl/colour-shift vs metallic confusions | frequent | rare |
 
-**Outcome (2026-10-09):** Runs 10–12 in `ablations.md` (Findings 12–16).
+**Outcome (2026-10-10):** Runs 10–13 in `ablations.md` (Findings 12–18).
 Most of these predictions failed, and the multi-light model did not beat the
 flash-only one. Always including the flash photo in training (Run 12) fixed
-the flakes and film thickness but not coat roughness; Run 13 tests the
-second explanation.
+the flakes and film thickness but not coat roughness; giving the flash photo
+its own slot (Run 13) fixed coat roughness too (65.9%, above the flash-only
+model's 62.5%), but film thickness collapsed to "no film" for every paint.
 
 If film_ior stays at ~0% even with side lights, the likely reasons are its
 trade-off with thickness (Kitagawa 2013) and the small Blender colour shifts
