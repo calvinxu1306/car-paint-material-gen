@@ -542,15 +542,98 @@ coat roughness is weighted against the other nine targets).
 
 ---
 
+## Run 13 — v5 data, the flash photo in its own pooling slot
+
+`runs/v5_flashslot`: identical to Run 12 except `--flash-slot` — the flash
+photo's features and global vector get their own slot next to the max and
+mean over all photos. Full precision, ~253 s per epoch. Epoch 1 had a
+one-off validation spike (2.29), gone by epoch 2 (0.49). Best epoch 125 of
+150 (validation loss 0.2513 with all photos, 0.2862 with the flash alone).
+Scored on `dataset_v5_test` (400 samples), like Runs 10–12.
+
+| photos shown | maps | coat wt | coat rgh | flk size | flk str | film d | film n | pigment acc. |
+|---|---|---|---|---|---|---|---|---|
+| Run 10, flash (flash-only model) | 64.8% | 3.1% | 62.5% | 79.3% | 81.1% | 77.1% | 8.1% | 86% |
+| Run 12, flash | 62.4% | 3.3% | 18.2% | 76.7% | 81.4% | 72.9% | 7.3% | 84% |
+| Run 12, all 6 | 63.4% | 3.7% | 20.2% | 78.3% | 87.9% | 77.9% | 5.5% | 86% |
+| **Run 13, flash** | 63.6% | 2.2% | **65.9%** | 80.1% | 76.5% | 27.0% | 4.6% | 83% |
+| **Run 13, flash+side1** | 64.9% | 2.5% | **66.8%** | 81.1% | 83.8% | 27.8% | 5.1% | 84% |
+| **Run 13, flash+3 sides** | 65.6% | 3.2% | **66.4%** | 81.7% | 85.8% | 27.4% | 6.0% | 85% |
+| **Run 13, all 6** | **65.7%** | 3.5% | **66.5%** | **82.2%** | 86.7% | 27.0% | 6.7% | 84% |
+
+Peel stays at −2.5 to −3.7% and coat tint at 31–36% overall (−159 to −188%
+within candy) in every row, as in Runs 10–12. Real-unit errors, flash | all
+6: coat roughness 0.041 | 0.041, flake size 3.8 | 3.4, flake strength
+0.024 | 0.014, film thickness 116 | 116 nm. The training printout
+(validation split, final epoch) had already shown both: coat
+roughness 0.043 | 0.040, film thickness 113 | 109 nm.
+
+Within each paint type (skill against that type's own average, flash | all
+6), coat roughness is 44 | 42% (solid), 68 | 71% (metallic), 66 | 67%
+(pearl), 69 | 66% (colour-shift) and 74 | 75% (candy); Run 10 scored 41–67%
+and Run 12 13–30%. Flake strength within type is 55–65% from the flash and
+73–81% with all six, so what the side photos add to flake strength is real
+measurement, not paint-type recognition. Coat weight is learned only within
+candy (28 | 32%), as before. The confusions are as before too: metallic
+called candy in 24 | 27 of 106, candy called metallic in 16 | 20 of 88;
+colour-shift identified in 41 | 45 of 54 (Run 12, all six: 49).
+
+Against the predictions under Run 12: coat roughness from the flash ≥ 50%
+— **65.9%, held**; flake size ≥ 70% — 80.1%, held; flake strength from the
+flash ≥ 75% — 76.5%, held, just (Run 12: 81.4%); with all six ≥ 85% —
+86.7%, held; maps at Run 12's level — 63.6 | 65.7% against 62.4 | 63.4%,
+held. Not predicted: film thickness fell from 73–78% to 27% (Finding 18).
+
+**Finding 17 — a flash slot recovers coat roughness.** With the flash
+photo's features and global vector passed to the heads in a slot of their
+own, coat roughness scores 65.9% from the flash alone — Run 12: 18.2%, the
+flash-only Run 10: 62.5% — the best of any v2 run, and it holds within each
+paint type. Explanation B of Finding 15 holds, in the form Finding 16 left
+it: shown only the flash photo, Run 12 had no pooling to hide anything
+either, so the cost was in training. There the layer-parameter head only
+saw max and mean vectors whose mix of flash and side photos changed every
+batch, and the coat highlight, whose look depends on where the light is,
+could not be read reliably from them. With a slot that always holds the
+flash photo, the head can learn coat roughness from that slot alone. More
+photos still add almost nothing to coat roughness (65.9 → 66.5%; the flash
+photo carries it, as Deschaintre et al. 2019 found for roughness), while
+they still add to flake strength (76.5 → 86.7%).
+
+**Finding 18 — film thickness collapsed to "no film" for every paint.**
+Film thickness error is 116 nm from the flash and from all six photos.
+Predicting 0 nm for every test sample would give (83 pearl × 250 nm + 54
+colour-shift × 475 nm, the recipe averages) / 400 = 116.0 nm, and 26.5%
+skill against the mean baseline; observed: 116.3 nm and 27.0%. Within type
+it scores −243% (pearl) and −270% (colour-shift), where predicting 0 would
+give about −233% and −322% (colour-shift's gap suggests a few of its samples
+get a non-zero thickness). So the film-thickness output is 0, or close to
+it, for almost every sample, while the type head still recognises pearl (77
+of 83) and colour-shift (41–45 of 54): the two are separate output heads,
+so knowing the type does not set the thickness. Zero is what an L1 loss
+settles on for an output that has learned nothing, since it is the median
+target (65% of paints have no film), and a sigmoid output held near 0 gets
+almost no gradient to leave it. Runs 10–12, with the same loss and head,
+learned thickness at the type level, so the collapse is not built in;
+whether the flash slot caused it or it is a one-seed accident (the epoch-1
+validation spike is a candidate) cannot be told from one run. Unchecked:
+the logit before the sigmoid, which would show how deep the output is stuck.
+
+---
+
 ## Not yet run
 
-- **Run 13** (v2, highest priority, running): `train_multi.py --photos
-  flash+random --flash-slot`, everything else as Run 12; predictions under
-  Run 12. Then, depending on its outcome: if coat roughness recovers, add
-  `--coords` (pixel coordinates as input channels, as Deschaintre et al.
-  2019) as Run 14; if it does not, look at the layer-parameter head and its
-  loss. Then Runs 15–16 from `v2_plan.md` §4 (v1 initialisation; v1 code on
-  v5 flash photos).
+- **Run 14** (v2, highest priority, not yet chosen): Run 13 met the
+  condition for adding `--coords` (pixel coordinates as input channels, as
+  Deschaintre et al. 2019) on top of `--flash-slot`, but Finding 18 should
+  be settled first, or Run 14's film thickness cannot be read. Options: Run
+  13 again with `--seed 1`, which tells a one-seed accident from an effect of
+  the flash slot but is a 10-hour run that tests nothing else; or remove the
+  pull towards 0 by masking film thickness on paints without a film (as film
+  IOR already is) and letting the predicted type supply the 0, which works
+  whatever the cause but scores overall film thickness on pearl and
+  colour-shift only (the within-type scores stay comparable). Then Runs
+  15–16 from `v2_plan.md` §4 (v1 initialisation; v1 code on v5 flash
+  photos).
 - v2 capture changes suggested by the literature (`reading_notes_v2.md`;
   each needs a re-render): HDR photos fed in log space, for `coat_weight`
   (Kaltheuner et al. 2021); fixed side-light slots instead of five random
