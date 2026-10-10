@@ -542,15 +542,69 @@ coat roughness is weighted against the other nine targets).
 
 ---
 
+## Run 13 — v5 data, the flash photo in its own pooling slot
+
+`runs/v5_flashslot`: identical to Run 12 except `--flash-slot`. Full
+precision, ~253 s per epoch. Epoch 1 had a one-off validation spike (2.29),
+gone by epoch 2 (0.49). Best epoch 125 of 150: train 0.2114, validation
+0.2513 with all photos and 0.2862 with the flash alone (maps 0.0472, layer
+parameters 0.1311, pigment accuracy 83%).
+
+**Held-out test set: not yet scored.** Pending:
+```
+python src/eval_multi.py --run runs/v5_flashslot --test-root data/blender_gen/dataset_v5_test --json runs/v5_flashslot/test.json
+```
+
+**First reading, from the training printout only** (validation split, the
+final epoch rather than `best.pt`; to be replaced by the test-set table).
+Skill here is estimated from each parameter's test-set baseline error, which
+Runs 10–12 pin down to within ~1% (error ÷ (1 − skill): coat roughness
+~0.12, flake size ~19, flake strength ~0.10, film thickness ~158 nm, the
+last also computed directly from the recipe ranges). In Run 11 the
+training printout and the test set agreed closely (coat roughness 0.105 vs.
+0.100 with all photos).
+
+| mean error (flash \| all 6) | Run 10 (test) | Run 12 (test) | Run 13 (val, final epoch) | Run 13 skill, est. |
+|---|---|---|---|---|
+| coat roughness | 0.045 | 0.099 \| 0.097 | **0.043 \| 0.040** | ~64% \| ~67% |
+| flake size | 4.0 | 4.5 \| 4.1 | 3.7 \| 3.6 | ~81% \| ~81% |
+| flake strength | 0.019 | 0.019 \| 0.012 | 0.025 \| 0.013 | ~75% \| ~87% |
+| film thickness (nm) | 36 | 43 \| 35 | **113 \| 109** | ~29% \| ~31% |
+
+Coat weight (0.126 over a 0.5–1 range), peel (0.017), film IOR (0.23) and
+coat tint (0.12 per channel) give no sign of change from Runs 10–12; their
+skill needs the test set.
+
+Against the predictions under Run 12, provisionally: coat roughness from
+the flash ≥ 50% (error ≤ ~0.06) — 0.043, **held**, as good as the
+flash-only Run 10; flake size ≥ 70% — held; flake strength from the flash
+≥ 75% — on the line; with all six ≥ 85% — held; maps at Run 12's level —
+needs the test set (the printout has no per-photo-set map score).
+
+**Unexpected: film thickness got much worse** — ~110 nm against 35–43 nm in
+Runs 10–12, from the flash and from all six. It was not predicted. Finding
+13 says film thickness is mostly paint-type recognition, and the paint type
+is still recognised (83%): predicting each type's average thickness alone
+would give ~32 nm plus the cost of misidentified samples. So the scalar
+head appears not to be using the type it recognises for film thickness.
+Note the total validation loss barely moved (Run 11's best: 0.2489): the
+coat-roughness gain (~0.09 normalised error) is about what the film
+thickness lost (~0.10), as if the layer-parameter head traded one for the
+other. Check on the test set (and in its per-pigment table) before
+reading anything into it.
+
+---
+
 ## Not yet run
 
-- **Run 13** (v2, highest priority, running): `train_multi.py --photos
-  flash+random --flash-slot`, everything else as Run 12; predictions under
-  Run 12. Then, depending on its outcome: if coat roughness recovers, add
+- **Run 13** (v2, highest priority): trained, best epoch 125; held-out test
+  scoring pending (command under Run 13). Then, depending on its outcome:
+  if coat roughness recovers (the training printout says it does), add
   `--coords` (pixel coordinates as input channels, as Deschaintre et al.
   2019) as Run 14; if it does not, look at the layer-parameter head and its
-  loss. Then Runs 15–16 from `v2_plan.md` §4 (v1 initialisation; v1 code on
-  v5 flash photos).
+  loss. If film thickness's drop holds on the test set, that comes first.
+  Then Runs 15–16 from `v2_plan.md` §4 (v1 initialisation; v1 code on v5
+  flash photos).
 - v2 capture changes suggested by the literature (`reading_notes_v2.md`;
   each needs a re-render): HDR photos fed in log space, for `coat_weight`
   (Kaltheuner et al. 2021); fixed side-light slots instead of five random
