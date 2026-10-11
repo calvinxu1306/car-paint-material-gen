@@ -46,6 +46,11 @@ Without --test-root it scores the validation split, which also chose best.pt
 (slightly optimistic). Use the held-out test set for numbers you report.
 --json results.json saves everything for the write-up.
 
+A run trained with --film-mask has its film thickness set to 0 wherever its
+type head says "no film" (gate_film in dataset_multi.py), then scored on
+every sample like any other run - so its scores compare with runs trained
+without the mask. No flag needed: config.json says so.
+
 A run trained with --hdr-input is scored on the .exr photos (log-encoded),
 exactly as it trained - no flag needed, config.json says so. Its test set
 must then be rendered with --hdr too:
@@ -68,7 +73,8 @@ for sub in ("data", "models"):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from dataset_multi import MultiLightDataset, MAP_CHANNELS, read_meta  # noqa: E402
+from dataset_multi import (MultiLightDataset, MAP_CHANNELS,  # noqa: E402
+                           gate_film, read_meta)
 from model import MultiLightPaintNet                         # noqa: E402
 
 SHORT = {"coat_weight": "coat wt", "coat_roughness": "coat rgh",
@@ -138,9 +144,12 @@ def training_means(ds, n_pig):
 
 
 @torch.no_grad()
-def score_all(model, ds, sets, device, map_mean, s_mean, ps_mean, n_pig, bs=4):
+def score_all(model, ds, sets, device, map_mean, s_mean, ps_mean, n_pig, bs=4,
+              gate=None):
     """Score every photo set in one pass over the data (each sample's PNGs
-    are read once, then the model runs once per set)."""
+    are read once, then the model runs once per set). gate (scalars,
+    pigment_logits) -> scalars, if given, post-processes the layer
+    parameters (a --film-mask run)."""
     from torch.utils.data import DataLoader
     n_s = len(ds.scalar_keys)
 
@@ -162,6 +171,8 @@ def score_all(model, ds, sets, device, map_mean, s_mean, ps_mean, n_pig, bs=4):
         for name, idx in sets.items():
             acc = accs[name]
             pred = {k: v.float().cpu() for k, v in model(b["photos"][:, idx].to(device)).items()}
+            if gate is not None:
+                pred["scalars"] = gate(pred["scalars"], pred["pigment"])
             acc["map_model"] += (pred["maps"] - t_maps).abs().mean(dim=(2, 3)).sum(0)
             acc["map_base"] += base_maps
             e_model = (pred["scalars"] - t_s).abs() * mask
@@ -282,9 +293,16 @@ def main():
     require_flash = (policy in ("flash", "flash+random")
                      or cfg["model_cfg"].get("flash_slot", False))
     sets = photo_sets(eval_ds.photo_names, max_photos, require_flash)
+    gate = None
+    if cfg["args"].get("film_mask"):
+        film_types = cfg["film_pigments"]
+        gate = lambda sc, logits: gate_film(sc, logits, keys, train_ds.scalar_ranges,
+                                            pigs, film_types)
+        print(f"film mask: film thickness set to 0 where the type head says no "
+              f"film (not {' / '.join(film_types)}), then scored on every sample\n")
     results = {}
     accs = score_all(model, eval_ds, sets, device, map_mean, s_mean, ps_mean,
-                     n_pig, args.batch_size)
+                     n_pig, args.batch_size, gate)
     for name, idx in sets.items():
         acc, conf = accs[name], accs[name]["conf"]
         cnt = acc["s_cnt"].clamp(min=1)

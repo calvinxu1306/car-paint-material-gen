@@ -73,7 +73,7 @@ for p in (HERE, os.path.join(HERE, "data"), os.path.join(HERE, "models")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from dataset_multi import MultiLightDataset, denormalise              # noqa: E402
+from dataset_multi import MultiLightDataset, denormalise, gate_film   # noqa: E402
 from export_demo import maps_to_textures, pick_device, save_rgb      # noqa: E402
 from model import MultiLightPaintNet                                  # noqa: E402
 
@@ -274,6 +274,9 @@ def main():
             if not all(torch.isfinite(v).all() for v in out.values()):
                 sys.exit(f"the model output NaN/inf for sample {s['index']}: "
                          f"{ckpt_path} is broken. Export a checkpoint from before it.")
+            if cfg["args"].get("film_mask"):   # the type head supplies "no film"
+                out["scalars"] = gate_film(out["scalars"], out["pigment"], keys, ranges,
+                                           pigments, cfg["film_pigments"])
             pred_maps = out["maps"][0].float().cpu().numpy()
             gt_maps = s["maps"].numpy()
 
