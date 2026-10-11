@@ -39,6 +39,16 @@ MODEL OPTIONS (off by default; see MultiLightPaintNet in model.py)
     --flash-slot   the flash photo gets its own slot next to the max/mean
                    pooling; needs --photos flash+random, all or flash
 
+FILM MASK (--film-mask, off by default)
+    Film thickness counts in the loss only on paints that have a film; for
+    the rest the pigment-type head's "no film" answer supplies the 0 (FILM
+    MASK in dataset_multi.py). Added after Run 13's film thickness collapsed
+    to 0 nm for every paint (Finding 18 in ablations.md). The validation
+    scores, log.csv and eval_multi.py apply the type head's answer and score
+    film thickness on every sample, as for runs trained without the mask.
+    Needs v5 data (pigment recipes in meta.json) and a non-zero
+    --pigment-weight.
+
 HDR INPUT (--hdr-input, off by default)
     Reads the photos from the .exr files of a folder rendered with
     generate_dataset_v5.py --hdr, in log space (HDR PHOTOS in dataset_multi.py):
@@ -95,7 +105,8 @@ for sub in ("data", "models"):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from dataset_multi import MultiLightDataset, MAP_CHANNELS  # noqa: E402
+from dataset_multi import (MultiLightDataset, MAP_CHANNELS,  # noqa: E402
+                           film_pigments, gate_film, read_meta)
 from model import MultiLightPaintNet, count_params           # noqa: E402
 
 
@@ -174,7 +185,10 @@ def to_device(batch, device):
 
 
 def run_epoch(model, loader, device, criterion, policy, max_photos,
-              optimizer=None, amp=False, gen=None):
+              optimizer=None, amp=False, gen=None, metric_gate=None):
+    """metric_gate (scalars, pigment_logits, mask) -> (scalars, mask), if
+    given, changes what the per-parameter errors score (--film-mask); the
+    loss is unaffected."""
     training = optimizer is not None
     model.train(training)
     n_s = None
@@ -211,12 +225,15 @@ def run_epoch(model, loader, device, criterion, policy, max_photos,
         for k in parts:
             totals[k] += parts[k].item()
         chan += (pred["maps"] - batch["maps"]).abs().mean(dim=(0, 2, 3)).detach().cpu().numpy()
-        e = ((pred["scalars"] - batch["scalars"]).abs() * batch["scalar_mask"]).detach()
+        pred_s, mask = pred["scalars"], batch["scalar_mask"]
+        if metric_gate is not None:
+            pred_s, mask = metric_gate(pred_s, pred["pigment"], mask)
+        e = ((pred_s - batch["scalars"]).abs() * mask).detach()
         if scal_err is None:
             n_s = e.shape[1]
             scal_err, scal_cnt = np.zeros(n_s), np.zeros(n_s)
         scal_err += e.sum(0).cpu().numpy()
-        scal_cnt += batch["scalar_mask"].sum(0).cpu().numpy()
+        scal_cnt += mask.sum(0).cpu().numpy()
         k_mask = batch["pigment"] >= 0
         correct += (pred["pigment"].argmax(1)[k_mask] == batch["pigment"][k_mask]).sum().item()
         known += k_mask.sum().item()
@@ -248,6 +265,9 @@ def main():
                     help="pixel coordinates as two extra input channels")
     ap.add_argument("--flash-slot", action="store_true",
                     help="give the flash photo its own slot in the pooling")
+    ap.add_argument("--film-mask", action="store_true",
+                    help="film thickness counts only on paints with a film; the "
+                         "type head supplies the 0 for the rest")
     ap.add_argument("--hdr-input", action="store_true",
                     help="photos from the folder's .exr files (rendered with "
                          "--hdr), log-encoded; needs pip install OpenEXR")
@@ -271,6 +291,15 @@ def main():
     if args.flash_slot and args.photos == "random":
         sys.exit("--flash-slot needs the flash photo first in every sample; "
                  "--photos random can leave it out. Use --photos flash+random.")
+    film_types = None
+    if args.film_mask:
+        film_types = film_pigments(read_meta(args.root))
+        if not film_types:
+            sys.exit(f"--film-mask: {args.root}/meta.json names no pigment type with "
+                     f"a film (needs v5 data with pigment recipes)")
+        if args.pigment_weight <= 0:
+            sys.exit("--film-mask takes \"no film\" from the pigment-type head, "
+                     "so it needs --pigment-weight above 0")
     if args.out is None:
         args.out = os.path.join("runs", time.strftime("run_%Y%m%d_%H%M%S"))
     if os.path.exists(os.path.join(args.out, "log.csv")) and not args.overwrite:
@@ -286,15 +315,15 @@ def main():
     from torch.utils.data import DataLoader
     if args.overfit:
         train_ds = MultiLightDataset(args.root, split="all", limit=args.overfit,
-                                     hdr=args.hdr_input)
+                                     hdr=args.hdr_input, film_mask=args.film_mask)
         val_ds = train_ds
         bs = min(args.batch_size, len(train_ds))
         print(f"OVERFIT MODE: {len(train_ds)} samples, expecting the loss to approach 0")
     else:
         train_ds = MultiLightDataset(args.root, split="train", limit=args.limit,
-                                     hdr=args.hdr_input)
+                                     hdr=args.hdr_input, film_mask=args.film_mask)
         val_ds = MultiLightDataset(args.root, split="val", limit=args.limit,
-                                   hdr=args.hdr_input)
+                                   hdr=args.hdr_input, film_mask=args.film_mask)
         bs = args.batch_size
     train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True,
                               num_workers=args.workers,
@@ -317,6 +346,7 @@ def main():
                    "scalar_ranges": train_ds.scalar_ranges,
                    "pigments": train_ds.pigments, "photos": train_ds.photo_names,
                    "val_indices": list(val_ds.indices),
+                   "film_pigments": film_types,
                    "dataset_meta": (json.load(open(meta_path))
                                     if os.path.exists(meta_path) else None)},
                   f, indent=2)
@@ -347,6 +377,20 @@ def main():
             + [f"val_{c}" for c in MAP_CHANNELS] + [f"val_{k}" for k in keys]
             + [f"valflash_{k}" for k in keys])
 
+    metric_gate = None
+    if args.film_mask:
+        # Score film thickness as eval_multi.py does: the type head's "no film"
+        # applied, on every sample (it is always meaningful without the mask).
+        k_film = keys.index("film_thickness")
+
+        def metric_gate(scalars, pigment_logits, mask):
+            mask = mask.clone()
+            mask[:, k_film] = 1.0
+            return gate_film(scalars, pigment_logits, keys, train_ds.scalar_ranges,
+                             train_ds.pigments, film_types), mask
+        print(f"film mask: thickness learned on {film_types} only; "
+              f"the type head supplies the 0 for the rest")
+
     best, best_epoch = float("inf"), None
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
@@ -355,9 +399,9 @@ def main():
         # Validate twice: with every photo, and with the flash photo alone.
         val_policy = "flash" if args.photos == "flash" else "all"
         va, last = run_epoch(model, val_loader, device, criterion, val_policy,
-                             args.max_photos, amp=args.amp)
+                             args.max_photos, amp=args.amp, metric_gate=metric_gate)
         vf, _ = run_epoch(model, val_loader, device, criterion, "flash",
-                          args.max_photos, amp=args.amp)
+                          args.max_photos, amp=args.amp, metric_gate=metric_gate)
         dt = time.time() - t0
         lr_now = optimizer.param_groups[0]["lr"]
         if scheduler is not None:
@@ -411,6 +455,9 @@ def main():
         a, f = va["scalar_err"][i], vf["scalar_err"][i]
         show = lambda e: f"{'n/a':>9}" if np.isnan(e) else f"{e * (hi - lo):9.4f}"
         print(f"  {k:<16} {show(a)} | {show(f)}   (range {lo} to {hi})")
+    if args.film_mask:
+        print("  (film_thickness: every sample, with the type head's \"no film\" "
+              "applied - as eval_multi.py scores it)")
     print("run eval_multi.py on best.pt for skill scores per photo set and paint type.")
     print(f"outputs in {os.path.abspath(args.out)}")
 

@@ -132,14 +132,15 @@ All on a held-out test set (`dataset_v5_test`, seeds from 100000).
 | 11 | **v5 multi-light** | `train_multi.py` (random 1–6 photos) | The main model |
 | 12 | v5 multi-light, flash always included | `--photos flash+random` | Was Run 11 held back by training without the flash photo? (added after Runs 10–11) |
 | 13 | v5 multi-light, flash slot | `--photos flash+random --flash-slot` | Does giving the flash photo its own slot recover coat roughness? (added after Run 12) |
-| 14 | v5 multi-light, pixel coordinates | `--coords` on top of the better of Runs 12–13 | Does knowing where a highlight is help? (Deschaintre et al. 2019) |
-| 15 | v5 multi-light, v1 init | `--init-from runs/v4_long/best.pt` | Does v1's training transfer? |
-| 16 | v1 code on v5 flash photos (optional) | `train.py --root dataset_v5 --epochs 150 --schedule cosine` | Sanity check against Run 10 |
+| 14 | v5 multi-light, film mask | `--photos flash+random --flash-slot --film-mask` | Does film thickness come back once the paints without a film stop pulling it to 0? (added after Run 13) |
+| 15 | v5 multi-light, pixel coordinates | `--coords` on top of the better of Runs 13–14 | Does knowing where a highlight is help? (Deschaintre et al. 2019) |
+| 16 | v5 multi-light, v1 init | `--init-from runs/v4_long/best.pt` | Does v1's training transfer? |
+| 17 | v1 code on v5 flash photos (optional) | `train.py --root dataset_v5 --epochs 150 --schedule cosine` | Sanity check against Run 10 |
 
-Runs 15 and 16 were first numbered 12 and 13, then 13 and 14; they moved as
-Runs 12–14 were added after Runs 10–11. Neither has been run.
+Runs 15–17 have moved as Runs 12–14 were added after Runs 10–11 (Runs 16
+and 17 were first numbered 12 and 13). None of them has been run.
 
-Run 16 is only roughly comparable with Run 10. v1's loader has no masks, so
+Run 17 is only roughly comparable with Run 10. v1's loader has no masks, so
 for solid paint `flake_scale` is a random target there. Compare coat
 roughness, flake strength, coat weight and peel only, and expect small
 differences from batch size (v1 8, v2 4) and the extra heads.

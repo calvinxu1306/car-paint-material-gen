@@ -616,23 +616,49 @@ almost no gradient to leave it. Runs 10–12, with the same loss and head,
 learned thickness at the type level, so the collapse is not built in;
 whether the flash slot caused it or it is a one-seed accident (the epoch-1
 validation spike is a candidate) cannot be told from one run. Unchecked:
-the logit before the sigmoid, which would show how deep the output is stuck.
+when it collapsed (`runs/v5_flashslot/log.csv` has film thickness's
+validation error for every epoch, column `val_film_thickness`) and how deep
+the output is stuck (the logit before the sigmoid).
+
+**Run 14 (next, predictions written before running):** `--photos
+flash+random --flash-slot --film-mask` (`runs/v5_filmmask`), everything
+else as Run 13. `--film-mask` (added for this run) leaves film thickness out
+of the loss on paints without a film, so it is learned on pearl and
+colour-shift only; for the rest the type head's answer supplies the 0
+(`gate_film` in `dataset_multi.py`: 0 nm wherever the most likely type has
+no film). `eval_multi.py` applies that and still scores film thickness on
+every sample, so the numbers compare with Runs 10–13. If the median pull
+was the cause, film thickness returns to about Runs 10–12's level: ≥ 60%
+from the flash and ≥ 65% with all six (Run 12: 72.9 / 77.9%; Run 13: 27%).
+It cannot reach their level easily, because a film paint the type head
+takes for one without a film now gets 0 nm. With Run 13's confusions and
+no within-type skill, the gate alone gives ~67% / ~73%. Within type, no
+collapse: pearl between −30% and +20%, colour-shift between −80% and +10%
+(Run 13: −243 / −270%). Colour-shift is expected to score below Runs
+10–12's +1 to +5%, because 10 of its 54 test samples were taken for a paint
+without a film from the flash photo. Within-type skill above +20% would
+mean thickness itself is being read, which no run has managed (Finding
+13). Everything else stays at Run 13's level: coat roughness from the
+flash ≥ 60% (Run 13: 65.9%); flake size, flake strength and the maps
+within ~3 points; pigment accuracy 83–86%; film IOR, coat weight (except
+candy) and peel near 0%. If film thickness stays below ~40% overall, the
+median pull was not the cause, and the flash slot becomes the suspect.
 
 ---
 
 ## Not yet run
 
-- **Run 14** (v2, highest priority, not yet chosen): Run 13 met the
-  condition for adding `--coords` (pixel coordinates as input channels, as
-  Deschaintre et al. 2019) on top of `--flash-slot`, but Finding 18 should
-  be settled first, or Run 14's film thickness cannot be read. Options: Run
-  13 again with `--seed 1`, which tells a one-seed accident from an effect of
-  the flash slot but is a 10-hour run that tests nothing else; or remove the
-  pull towards 0 by masking film thickness on paints without a film (as film
-  IOR already is) and letting the predicted type supply the 0, which works
-  whatever the cause but scores overall film thickness on pearl and
-  colour-shift only (the within-type scores stay comparable). Then Runs
-  15–16 from `v2_plan.md` §4 (v1 initialisation; v1 code on v5 flash
+- **Run 14** (v2, highest priority): `--film-mask` against Finding 18;
+  command and predictions under Run 13. Chosen over re-running Run 13 with
+  `--seed 1`, which would tell a one-seed accident from an effect of the
+  flash slot but leave the pull towards 0 in place for every later run.
+  ```
+  python src/train_multi.py --root data/blender_gen/dataset_v5 --out runs/v5_filmmask --photos flash+random --flash-slot --film-mask
+  python src/eval_multi.py --run runs/v5_filmmask --test-root data/blender_gen/dataset_v5_test --json runs/v5_filmmask/test.json
+  ```
+  Then Run 15: `--coords` (pixel coordinates as input channels, as
+  Deschaintre et al. 2019) on top of the better of Runs 13–14, and Runs
+  16–17 from `v2_plan.md` §4 (v1 initialisation; v1 code on v5 flash
   photos).
 - v2 capture changes suggested by the literature (`reading_notes_v2.md`;
   each needs a re-render): HDR photos fed in log space, for `coat_weight`
