@@ -27,6 +27,17 @@ it to guess random numbers. The mask switches them off:
 Everything else is always meaningful - "no film" is a real answer
 (film_thickness = 0), and so is "no tint" (coat_tint = white).
 
+FILM MASK (film_mask=True; off by default; train_multi.py --film-mask)
+Also ignores film_thickness where it is 0, so the network learns thickness
+only on paints that have a film. Two thirds of v5 paints have none, which
+makes 0 nm the median target: the answer an L1 loss settles on when the
+output learns nothing (Run 13 collapsed to it, Finding 18 in ablations.md).
+The 0 then comes from the pigment-type head instead: gate_film() sets the
+thickness to 0 wherever the predicted type (its most likely one) has no
+film. eval_multi.py and export_demo_multi.py apply it to a run
+trained this way and still score film thickness on every sample, so the
+scores stay comparable with runs trained without the mask.
+
 The scalar list, its ranges, the photo names and the pigment names all come
 from the folder's meta.json, so the loader can't silently disagree with the
 generator.
@@ -66,6 +77,8 @@ MAP_FILES = ["basecolor", "roughness", "metallic", "normal"]
 
 # Which scalar is ignored when, as (key, the key that switches it off).
 MASK_RULES = [("flake_scale", "flake_strength"), ("film_ior", "film_thickness")]
+# film_mask=True adds: film thickness is ignored where it is 0 (FILM MASK above).
+FILM_MASK_RULE = ("film_thickness", "film_thickness")
 
 # Log encoding of HDR photos (Kaltheuner et al. 2021): 0 -> 0, 1 -> 1.
 HDR_EPS = 0.01
@@ -151,12 +164,37 @@ def denormalise(v, keys, ranges) -> dict:
             for i, k in enumerate(keys)}
 
 
-def scalar_mask(p: dict, keys) -> np.ndarray:
+def scalar_mask(p: dict, keys, rules=MASK_RULES) -> np.ndarray:
     m = np.ones(len(keys), dtype=np.float32)
-    for key, switch in MASK_RULES:
+    for key, switch in rules:
         if key in keys and switch in p and float(p[switch]) == 0.0:
             m[keys.index(key)] = 0.0
     return m
+
+
+def film_pigments(meta: dict) -> list[str]:
+    """The pigment types whose recipe has a thin film (thickness not fixed
+    at 0), from a v5 meta.json."""
+    recipes = meta.get("recipes", {})
+    return [name for name in meta.get("pigments", {})
+            if recipes.get(name, {}).get("film_thickness", 0.0) != 0.0]
+
+
+def gate_film(scalars: torch.Tensor, pigment_logits: torch.Tensor, keys, ranges,
+              pigments, film_types) -> torch.Tensor:
+    """For a model trained with the film mask: film thickness 0 ("no film")
+    wherever the predicted pigment type is not one of film_types - the same
+    type the confusion tables and the demo show. scalars (B, S) normalised;
+    returns a copy."""
+    k = keys.index("film_thickness")
+    has_film = torch.tensor([p in film_types for p in pigments],
+                            device=pigment_logits.device)
+    keep = has_film[pigment_logits.argmax(dim=1)].to(scalars.device)
+    lo, hi = ranges["film_thickness"]
+    out = scalars.clone()
+    out[:, k] = torch.where(keep, scalars[:, k],
+                            torch.full_like(scalars[:, k], (0.0 - lo) / (hi - lo)))
+    return out
 
 
 class MultiLightDataset(Dataset):
@@ -167,14 +205,18 @@ class MultiLightDataset(Dataset):
         limit: use only the first N samples.
         hdr: read the photos from the .exr files, log-encoded (see HDR PHOTOS
              above). The folder must have been rendered with --hdr.
+        film_mask: also mask film thickness where it is 0 (see FILM MASK above).
     """
 
     def __init__(self, root: str, split: str = "train", val_fraction: float = 0.1,
                  photos: list[str] | None = None, limit: int | None = None,
-                 hdr: bool = False):
+                 hdr: bool = False, film_mask: bool = False):
         self.root = root
         self.hdr = hdr
         info = describe(root)
+        if film_mask and "film_thickness" not in info["scalar_keys"]:
+            raise ValueError(f"film_mask: {root} has no film_thickness parameter")
+        self.mask_rules = MASK_RULES + ([FILM_MASK_RULE] if film_mask else [])
         if hdr:
             if not info["hdr"]:
                 raise RuntimeError(
@@ -274,7 +316,8 @@ class MultiLightDataset(Dataset):
                 maps.transpose(2, 0, 1)).astype(np.float32)),     # (8, H, W)
             "scalars": torch.from_numpy(
                 normalise(p, self.scalar_keys, self.scalar_ranges)),
-            "scalar_mask": torch.from_numpy(scalar_mask(p, self.scalar_keys)),
+            "scalar_mask": torch.from_numpy(scalar_mask(p, self.scalar_keys,
+                                                        self.mask_rules)),
             "pigment": pigment,
             "matte": torch.tensor(float(p.get("finish") == "matte"),
                                   dtype=torch.float32),
